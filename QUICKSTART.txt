@@ -1,0 +1,21 @@
+cistron — quick start
+=====================
+
+1.  pip install openpyxl
+2.  python3 cistron.py
+3.  open figure.svg
+
+That draws constructs.xlsx, which ships filled in with three example
+constructs. Edit that workbook — start on its "Start here" sheet — and run
+step 2 again.
+
+Useful:
+    python3 cistron.py --watch          redraw every time you save
+    python3 cistron.py --list           every theme, palette and part type
+    python3 cistron.py --new my.xlsx    start a separate workbook
+    python3 cistron.py --check          validate, write nothing
+
+Optional: pip install cairosvg   to write .png / .pdf instead of .svg
+          (set `outfile` in the settings sheet to figure.png)
+
+Full documentation: README.md

@@ -1,0 +1,5 @@
+openpyxl>=3.0
+
+# optional - only needed if you set `outfile` to a .png or .pdf name.
+# the SVG is always written either way.
+# cairosvg>=2.5

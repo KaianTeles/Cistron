@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+title: "cistron: genetic construct maps from a spreadsheet"
+message: "If you use this software in a publication, please cite it."
+type: software
+authors:
+  - family-names: Teles
+    given-names: Kaian
+repository-code: "https://github.com/KaianTeles/cistron"
+license: MIT
+version: "1.0"
+abstract: >-
+  cistron draws genetic construct and cassette maps as editable SVG from an
+  Excel workbook. Parts are described one row at a time; themes, labelling and
+  colour are chosen in the spreadsheet rather than in code. Colour assignment
+  is deterministic in the part label, so a gene keeps its colour across every
+  figure in a set.
+keywords:
+  - synthetic biology
+  - molecular biology
+  - figure
+  - visualization
+  - SVG
+  - plasmid map
