@@ -23,6 +23,20 @@ First public release.
 
 ### Fixed before publishing
 
+- the gallery drew its captions without measuring them, so a long one ran
+  straight into the panel beside it; captions now wrap to the cell and the
+  generator refuses to draw one that does not fit
+- every gallery panel was rendered to the same pixel width, which magnified
+  the narrower ones - so the two panels of the `join` pair, whose whole
+  point is the difference between them, came out at different sizes. They
+  are rendered at a fixed scale per drawing unit now, and are comparable
+- the README gave two different install recipes, one at the top and one
+  under Install, and the shorter one did not fetch the files at all
+- the repository was rebuilt on a single commit: rebuilding the gallery
+  had committed about 2 MB of PNG each time, and the history had grown
+  to 12 MB for 140 KB of code. What was found and fixed is recorded
+  here rather than in the commit log
+
 - the colour check compared the colours chosen, not the colours painted. A
   `tint` style washes every fill 58 per cent towards the background, which
   squeezes them about two and a half times closer, so two parts could come

@@ -107,8 +107,16 @@ def draw(cons, name, **over):
     s.update(over)
     st, pal, _, pal_name = C.resolve_theme(s)
     res = C.assign_palette(cons, {}, pal, "theme")
-    path = C.build_figure(cons, s, res, st)[0]
-    return Image.open(io.BytesIO(cairosvg.svg2png(url=path, output_width=1500)))
+    fig = C.build_figure(cons, s, res, st)
+    # A fixed number of pixels per DRAWING UNIT, not a fixed pixel width.
+    # Rendering every panel to the same width magnified the narrow ones, so
+    # two panels meant to be compared came out at different sizes and the
+    # comparison was a lie - the join pair worst of all. cairosvg's `scale`
+    # multiplies the declared physical size (15cm), not the units, so the
+    # width has to be worked out from the viewBox.
+    png = cairosvg.svg2png(url=fig.path,
+                           output_width=max(1, round(fig.width * SCALE)))
+    return Image.open(io.BytesIO(png))
 
 
 def _font(size, bold=True):
@@ -121,37 +129,78 @@ def _font(size, bold=True):
     return ImageFont.load_default()
 
 
+# pixels per drawing unit, so every panel is rendered at one size
+SCALE = 2.4
+
 CAP_F, TIT_F = _font(26), _font(34)
 PAD, GUT, CAP_H, BORDER = 34, 34, 42, "#DDE1E4"
 
 
+_MEASURE = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+
+
+def _text_w(s, font):
+    return _MEASURE.textbbox((0, 0), s, font=font)[2]
+
+
+def _wrap(text, font, width):
+    """Break a caption into lines that fit. Captions used to be drawn
+    straight out, so a long one ran into the panel beside it."""
+    lines, line = [], ""
+    for word in text.split():
+        trial = f"{line} {word}".strip()
+        if line and _text_w(trial, font) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = trial
+    if line:
+        lines.append(line)
+    return lines or [""]
+
+
+LINE_H = 32
+
+
 def grid(panels, cols, out, title, cell_w=720):
     """Lay panels out on a plain white sheet, each scaled to cell_w."""
-    ims = []
-    for cap, im in panels:
-        h = max(1, round(im.height * cell_w / im.width))
-        ims.append((cap, im.resize((cell_w, h), Image.LANCZOS)))
-
-    rows = [ims[i:i + cols] for i in range(0, len(ims), cols)]
-    row_h = [max(im.height for _, im in r) + CAP_H for r in rows]
-    top = PAD + (54 if title else 0)
+    # Panels side by side are scaled by the widest in their row, not each
+    # to the full cell. Scaling each to fill its own cell blew up the
+    # narrower one, so a pair meant to be compared came out at different
+    # sizes and the comparison lied.
+    groups = [panels[i:i + cols] for i in range(0, len(panels), cols)]
+    rows = []
+    for g in groups:
+        f = cell_w / max(im.width for _, im in g)
+        rows.append([(_wrap(cap, CAP_F, cell_w - 4) if cap else [],
+                      im.resize((max(1, round(im.width * f)),
+                                 max(1, round(im.height * f))), Image.LANCZOS))
+                     for cap, im in g])
+    # every row gives its captions the same height, so the panels in it
+    # start on the same line whatever their captions needed
+    cap_h = [max((len(c) for c, _ in r), default=0) * LINE_H + 10 for r in rows]
+    row_h = [max(im.height for _, im in r) + ch for r, ch in zip(rows, cap_h)]
     W = PAD * 2 + cols * cell_w + (cols - 1) * GUT
+    title_lines = _wrap(title, TIT_F, W - PAD * 2) if title else []
+    top = PAD + (len(title_lines) * 44 + 12 if title_lines else 0)
     H = top + sum(row_h) + GUT * (len(rows) - 1) + PAD
 
     sheet = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(sheet)
-    if title:
-        d.text((PAD, PAD - 6), title, font=TIT_F, fill="#15181B")
+    for i, ln in enumerate(title_lines):
+        d.text((PAD, PAD - 6 + i * 44), ln, font=TIT_F, fill="#15181B")
 
     y = top
-    for r, rh in zip(rows, row_h):
+    for r, ch, rh in zip(rows, cap_h, row_h):
         x = PAD
         for cap, im in r:
-            if cap:
-                d.text((x + 2, y + 4), cap, font=CAP_F, fill="#2B3034")
-            sheet.paste(im, (x, y + CAP_H))
-            d.rectangle([x, y + CAP_H, x + im.width - 1,
-                         y + CAP_H + im.height - 1], outline=BORDER)
+            for i, ln in enumerate(cap):
+                assert _text_w(ln, CAP_F) <= cell_w, f"caption too wide: {ln!r}"
+                d.text((x + 2, y + 4 + i * LINE_H), ln, font=CAP_F,
+                       fill="#2B3034")
+            sheet.paste(im, (x, y + ch))
+            d.rectangle([x, y + ch, x + im.width - 1, y + ch + im.height - 1],
+                        outline=BORDER)
             x += cell_w + GUT
         y += rh + GUT
 

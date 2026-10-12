@@ -93,14 +93,6 @@ move in the `colors` sheet; a pin is never touched.
 
 ---
 
-### 6. The repository carries its gallery history
-
-Each rebuild of `examples/` commits about 2 MB of PNG, so the git history
-is larger than the code warrants. It costs nothing at runtime and only
-matters if you mind the clone size.
-
----
-
 ## Reporting something else
 
 If a figure comes out wrong, `python3 cistron.py --check` prints what the

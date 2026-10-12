@@ -8,37 +8,37 @@ Each row of the workbook is one part. Rows sharing a name become one
 construct. The look is set by one word in the settings sheet.
 
 ```bash
-pip install openpyxl
-python3 cistron.py
-```
-
-No arguments needed. `constructs.xlsx` ships filled in with three example
-constructs and is the file you edit.
-
-> **[Known issues](KNOWN_ISSUES.md)** — six of them, all measured, none
-> reached by the default settings. Worth a minute before you file a bug.
-
----
-
-## Install
-
-There is one required dependency. Open a terminal and paste these four lines:
-
-```bash
 git clone https://github.com/KaianTeles/cistron.git
 cd cistron
 pip install -r requirements.txt
 python3 cistron.py
 ```
 
-That writes `figure.svg` next to `constructs.xlsx`. If `pip` is not found, use
-`pip3`; if `python3` is not found, use `python`. Python 3.8 or newer — macOS
-and most Linux installs already have it, and on Windows the installer at
-[python.org](https://www.python.org/downloads/) works (tick *Add Python to
-PATH*).
+That is the whole of it. One dependency, `openpyxl`, and no arguments:
+`constructs.xlsx` ships filled in with three example constructs and is the
+file you edit. The figure lands beside it.
 
-**Don't want to use git?** Click *Code → Download ZIP* at the top of this page,
-unzip it, then `cd` into the folder and run the last two lines.
+No git? [Download the ZIP](../../archive/refs/heads/main.zip), unzip it, and
+run the last two lines inside the folder. If `pip` is not found use `pip3`,
+and if `python3` is not found use `python`. Python 3.8 or newer.
+
+> **[Known issues](KNOWN_ISSUES.md)** — five of them, all measured, none
+> reached by the default settings. Worth a minute before you file a bug.
+
+---
+
+## Install
+
+The four lines at the top of this page are the whole installation. What they
+need:
+
+| | |
+|---|---|
+| **Python 3.8 or newer** | macOS and most Linux installs already have it. On Windows, the installer at [python.org](https://www.python.org/downloads/) works — tick *Add Python to PATH* |
+| **openpyxl** | the one dependency, installed by `pip install -r requirements.txt` |
+
+Nothing else is required, and nothing is installed system-wide beyond that
+one package.
 
 ### Optional extras
 

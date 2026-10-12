@@ -525,6 +525,35 @@ check(_s5["outfile"] == "=figure.svg",
       "outfile written as =figure.svg reads back unchanged",
       repr(_s5["outfile"]))
 
+# ------------------------------------------------- one way to install
+print("== the install instructions do not contradict themselves ==")
+_rdme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_blocks = re.findall(r"```bash\n(.*?)```", _rdme, re.S)
+check(_blocks, "the README has a bash block")
+if _blocks:
+    check("requirements.txt" in _blocks[0],
+          "the first command block installs from requirements.txt",
+          _blocks[0].strip().splitlines()[0][:40])
+    _installers = [b for b in _blocks if "pip install" in b]
+    _recipes = {tuple(l.strip() for l in b.strip().splitlines()
+                      if l.strip().startswith(("pip ", "git ", "cd ")))
+                for b in _installers}
+    check(len(_recipes) <= 1,
+          "there is only one install recipe, not two that differ",
+          f"{len(_recipes)} different ones")
+check("pip install -r requirements.txt" in _rdme,
+      "it points at requirements.txt, so the dependency list has one home")
+
+# ------------------------------------------------- the gallery is legible
+print("== the gallery panels are built to be comparable ==")
+_gal = open(os.path.join(ROOT, "examples", "make_gallery.py"),
+            encoding="utf-8").read()
+check("_wrap(" in _gal and "caption too wide" in _gal,
+      "captions are wrapped to the cell and asserted, not drawn blind")
+check("output_width=max(1, round(fig.width * SCALE))" in _gal,
+      "panels are rendered at a fixed scale per drawing unit",
+      "so two panels side by side can be compared")
+
 # ------------------------------------------------- the note is findable
 print("== known issues are written down and easy to find ==")
 _ki = os.path.join(ROOT, "KNOWN_ISSUES.md")
