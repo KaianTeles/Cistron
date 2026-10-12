@@ -113,7 +113,7 @@ for f, pat in (("CITATION.cff", r'^version:\s*"?([\d.]+)"?'),
 # --------------------------------------------------------- essential files
 missing = [f for f in ("README.md", "LICENSE", "requirements.txt",
                        "QUICKSTART.txt", ".gitignore", "CITATION.cff",
-                       "CHANGELOG.md", M.DEFAULT_WORKBOOK)
+                       "CHANGELOG.md", "KNOWN_ISSUES.md", M.DEFAULT_WORKBOOK)
            if not os.path.exists(os.path.join(ROOT, f))]
 (ok if not missing else bad)("every expected file is present", str(missing))
 

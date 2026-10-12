@@ -194,11 +194,57 @@ grid([("label_repeat = all", draw(PANEL, "r_all", label_repeat="all")),
 # ------------------------------------------------------------- part types
 grid([("", draw(VOCAB, "vocab", figure_width_cm=30, cassette_spacing=76,
                  label_pt=8.5, labels="outside", label_repeat="all",
-                 anchor_side="left", palette="spectrum"))],
+                 anchor_side="left"))],
      1, "gallery_parts.png",
      f"all {len(C.PART_TYPES)} part types, across "
      f"{len(set(v['glyph'] for v in C.PART_TYPES.values()))} glyph shapes",
      cell_w=1460)
+
+# ----------------------------------------- join, dir and anchor_side
+def _fuse(join):
+    return [("prom", "Promoter", "", "", 0),
+            ("ctp", "Signal", "XS", "", join),
+            ("cds", "Enzyme", "L", "", join),
+            ("tag", "Tag", "XS", "", join),
+            ("term", "", "", "", 0)]
+
+
+FUSE_OFF = constructs([("blank", _fuse(0))])
+FUSE_ON = constructs([("yes", _fuse(1))])
+
+DIRS = constructs([("dir blank", [("prom", "Promoter", "", "", 0),
+                                  ("cds", "Enzyme", "L", "", 0),
+                                  ("loxp", "Site", "", "", 0)]),
+                   ("dir = rev", [("prom", "Promoter", "", "rev", 0),
+                                  ("cds", "Enzyme", "L", "rev", 0),
+                                  ("loxp", "Site", "", "rev", 0)])])
+
+# anchor_side only shows itself when the constructs differ in length
+RAGGED = constructs([
+    ("Long",   [("ha", "5' arm", "M", "", 0), ("prom", "Promoter", "", "", 0),
+                ("cds", "Enzyme", "L", "", 0), ("term", "", "", "", 0),
+                ("ha", "3' arm", "M", "", 0)]),
+    ("Medium", [("ha", "5' arm", "M", "", 0), ("prom", "Promoter", "", "", 0),
+                ("cds", "Enzyme", "M", "", 0)]),
+    ("Short",  [("ha", "5' arm", "M", "", 0), ("loxp", "Site", "", "", 0)]),
+])
+
+LAY = dict(figure_width_cm=15, labels="outside", label_repeat="all",
+           cassette_spacing=108)
+ONE = dict(LAY, cassette_spacing=94)
+grid([("join = blank \u2014 parts spaced along the backbone",
+       draw(FUSE_OFF, "j_off", row_titles="none", **ONE)),
+      ("join = yes \u2014 flush against the previous part, a fusion",
+       draw(FUSE_ON, "j_on", row_titles="none", **ONE)),
+      ("anchor_side = right (default) \u2014 ragged left, aligned right",
+       draw(RAGGED, "a_r", row_titles="left", anchor_side="right", **LAY)),
+      ("anchor_side = left \u2014 aligned left, ragged right",
+       draw(RAGGED, "a_l", row_titles="left", anchor_side="left", **LAY)),
+      ("dir \u2014 blank points right, rev points left",
+       draw(DIRS, "dirs", row_titles="left", **LAY))],
+     2, "gallery_layout.png",
+     "fusing parts, pointing them backwards, and lining rows up",
+     cell_w=740)
 
 # ------------------------------------------------- what you type -> what you get
 WALK_HEAD = ["cassette", "order", "type", "label", "size", "dir", "join"]
@@ -246,7 +292,7 @@ grid([("the cassettes sheet", table_image(WALK_HEAD, WALK_ROWS)),
      "eight rows in, one figure out", cell_w=1240)
 
 # the headline image: one construct set, the default look
-im = draw(PANEL, "hero", palette="spectrum")
+im = draw(PANEL, "hero")        # the default look, no overrides
 im.save(os.path.join(OUT, "example_figure.png"))
 import shutil
 shutil.copy(os.path.join(TMP, "hero.svg"), os.path.join(OUT, "example_figure.svg"))

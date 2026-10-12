@@ -17,6 +17,106 @@ First public release.
   `examples/make_gallery.py` so it cannot drift from the code
 - 123 tests, run on Python 3.8 through 3.13
 
+- `dir = rev` on a part whose shape is symmetrical is now reported by the
+  sanity check instead of being dropped in silence, matching how an ignored
+  `size` is handled
+
+### Fixed before publishing
+
+- the colour check compared the colours chosen, not the colours painted. A
+  `tint` style washes every fill 58 per cent towards the background, which
+  squeezes them about two and a half times closer, so two parts could come
+  out the same colour on the page with nothing said. `sepia` and
+  `watercolour` now warn where they used to stay quiet
+- a glyph's outline is drawn centred on its path and its cap rounds off
+  above that, which was not counted in the room reserved for the label
+  above it - up to 6.5 of the 7 units of clearance on a thick style
+- what is left is written down in KNOWN_ISSUES.md, linked from the top of
+  the README, from `--help` and from the workbook's first sheet
+
+- `-l` stopped working when unknown flags began to be refused, because it
+  was tested for but left out of the known set
+- `--new` wrote a workbook even with `--check`, which promises to write
+  nothing, and a second file name on the command line was silently ignored
+- only the cassettes sheet kept formula-looking text as text; on the
+  settings sheet `outfile = =figure.svg` was stored as a formula, read back
+  as blank, and the figure went to the default name with no word said
+- a misspelled setting name was skipped in silence; it is now reported
+- requirements.txt names all three packages and says what each is for
+
+### Fixed in a second review
+
+- **`outfile` was validated after the drawing had been written to it**, so
+  pointing it at the workbook replaced 32 KB of constructs with 2.5 KB of
+  SVG and then reported it as an error. It is checked at load time now, and
+  only `.svg`, `.png` and `.pdf` are accepted
+- the figure is written through a temporary file and renamed, so a full
+  disk leaves the previous one intact instead of truncated
+- `outfile` and `export_prefix` may no longer climb out of the folder
+  with `..`, and `nan` / `inf` no longer pass the positive-number check
+- a failed `.png` conversion deleted the only copy of the drawing and then
+  pointed at the deleted file
+- `--watch` resolved its workbook differently from the main path, so a
+  relative name watched a file that was not there, silently, forever
+- a pinned colour was kept clear within the palette but not within its
+  spares, so roughly one figure in fifty gave an automatic part a colour a
+  pin already owned
+- the repair pass judged colours in normal vision only; it now also checks
+  both common forms of red-green colour blindness, except on ordered ramps
+- the legend drew point features at up to twice the width they have on the
+  backbone, so the key did not match the figure
+- `overhang` reversed drew a different glyph instead of a mirrored one
+- a C0 control character in a label produced an SVG no editor could open
+- the tier warning fired when nothing was stacked, and none of the fixes it
+  offered could clear it; the advised figure width rounded down, so
+  following it exactly failed about half the time
+
+### Fixed in review before release
+
+- leader lines ran the full height at a label's centre and struck through
+  the labels on lower tiers; every leader is now drawn first and each label
+  carries a background halo that interrupts it
+- `deep`, `earth` and `pastel` each held a near-duplicate colour, so the
+  tool warned about colours it had chosen itself
+- `--themes` wrote 17 files while `--check` promises to write nothing;
+  the combination is refused
+- a mistyped flag was ignored, so `--chek` ran a normal draw and overwrote
+  the figure `--check` exists to protect; `-V` never worked at all
+- a brand new workbook opened with four of its five demo rows flagged red
+  by its own conditional formatting, because they used aliases while the
+  rule checks canonical names
+- the theme, style and palette dropdowns were built inline, eight themes
+  short of Excel's 255-character limit, past which the file opens damaged
+- a label beginning with `=`, `+`, `-` or `@` was stored as a formula and
+  came back empty
+- writing a `.png` renamed the drawing onto `<name>.svg`, overwriting a
+  file of that name and leaving the intermediate behind
+- `export_each` wrote two constructs whose names differ only in punctuation
+  to one file
+- a three-digit hex in the colors sheet crashed the workbook writer
+- `oriT`'s tick and the round caps on stroked glyphs were not counted in
+  the room reserved above a glyph
+
+
+- `--new` refused to overwrite an existing workbook only after this review;
+  it previously replaced it with an empty starter, without asking
+- the SVG is written as UTF-8 and declares it, so a Greek letter or a CJK
+  character in a gene name no longer kills the run on a non-UTF-8 system
+- a relative workbook path resolves against the folder you are standing in
+  before the folder holding the script, so the command `--new` prints works
+- a corrupt or still-open workbook, a non-numeric setting and a zero or
+  negative size each report what is wrong instead of raising
+- row titles in `above` mode, and legend entries with wide capitals, were
+  measured too narrow and ran off the edge of the canvas
+- the colour-blindness warning recommended `cividis`, which has three pairs
+  its own test rejects; it now recommends `tol-bright`
+- two labels pinned to the same colour on purpose were reported as the
+  palette running out
+- in `inside` mode the sanity check advised raising `label_pt`, which widens
+  the glyph and shrinks the text again; that advice is no longer offered
+- promoter and terminator glyphs were drawn 4.5 units left of the slot their
+  label was centred on
+
 ### Fixed before release
 
 - An outside or below label on the first or last part of a construct was

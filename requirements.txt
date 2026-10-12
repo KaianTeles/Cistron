@@ -1,5 +1,16 @@
+# Everything cistron needs to draw a figure.
 openpyxl>=3.0
 
-# optional - only needed if you set `outfile` to a .png or .pdf name.
-# the SVG is always written either way.
-# cairosvg>=2.5
+# ---------------------------------------------------------------- optional
+# Nothing below is needed to draw an SVG, which is what cistron writes by
+# default. Install a line only if you want what it describes.
+
+# Write .png or .pdf as well, by giving `outfile` that extension in the
+# settings sheet. Without it, asking for one says so and keeps the SVG.
+#   pip install cairosvg
+
+# Rebuild the gallery images in the README (examples/make_gallery.py).
+#   pip install cairosvg pillow
+
+# The tests need neither: python3 tests/run_all.py skips the two checks
+# that render a bitmap and runs everything else.

@@ -121,7 +121,7 @@ odd = {
 for name, rows in odd.items():
     p = make_wb(f"{TMP}/o_{abs(hash(name))}.xlsx", rows)
     try:
-        (out, w, h, fpx, lh, pr), s, cons, st = render(p, labels="outside", figure_width_cm=18)
+        (out, w, h, fpx, lh, pr, _pt, _ti), s, cons, st = render(p, labels="outside", figure_width_cm=18)
         txt = svg_text(out)
         ET.fromstring(txt)                       # must be well-formed XML
         if "nan" in txt.lower() or "inf" in txt.lower():
@@ -150,7 +150,7 @@ for name, over in {
  "no width":          dict(figure_width_cm=None),
 }.items():
     try:
-        (out, w, h, fpx, lh, pr), s, cons, st = render(p, **over)
+        (out, w, h, fpx, lh, pr, _pt, _ti), s, cons, st = render(p, **over)
         ET.fromstring(svg_text(out))
         if w <= 0 or h <= 0: bad(name, f"viewBox {w}x{h}")
         else: ok(name, f"{w:.0f}x{h:.0f}")
@@ -174,7 +174,7 @@ for theme, lab, rep in itertools.product(sorted(M.THEMES),
                                          ["all","once","row"]):
     n += 1
     try:
-        (out, w, h, fpx, lh, pr), s, cons, st = render(
+        (out, w, h, fpx, lh, pr, _pt, _ti), s, cons, st = render(
             p, theme=theme, style="", palette="", palette_mode="theme",
             labels=lab, label_repeat=rep, figure_width_cm=18,
             outfile=f"{TMP}/m.svg")
@@ -241,7 +241,7 @@ na, no = ntext(x), ntext(y)
 for name, over, limit in [("tiny width guarded", dict(figure_width_cm=0.5), 20000),
                           ("huge min_font guarded", dict(figure_width_cm=8, min_font_pt=60,
                                                          show_legend="TRUE"), 20000)]:
-    (out, w, h, fpx, lh, pr), s_, cons_, st_ = render(p, outfile=f"{TMP}/rg.svg", **over)
+    (out, w, h, fpx, lh, pr, _pt, _ti), s_, cons_, st_ = render(p, outfile=f"{TMP}/rg.svg", **over)
     wn = M.fit_warnings(cons_, s_, st_, w, h, fpx, lh, pr)
     hit = any("unreachable" in x for x in wn)
     (ok if (w < limit and h < limit and hit) else bad)(
@@ -294,11 +294,11 @@ text_bad  = [w for w in worst if w[1] < 0.30]
 
 # ------------------------------------------------------------- 7. warnings
 print("== sanity-check behaviour ==")
-(out, w, h, fpx, lh, pr), s, cons, st = render(p, labels="outside", label_pt=11,
+(out, w, h, fpx, lh, pr, _pt, _ti), s, cons, st = render(p, labels="outside", label_pt=11,
                                            figure_width_cm=16, outfile=f"{TMP}/w.svg")
 wn = M.fit_warnings(cons, s, st, w, h, fpx, lh, pr)
 (ok if not wn else bad)("no false positive on sane settings", f"{len(wn)} warnings")
-(out, w, h, fpx, lh, pr), s, cons, st = render(p, labels="outside", label_pt=11,
+(out, w, h, fpx, lh, pr, _pt, _ti), s, cons, st = render(p, labels="outside", label_pt=11,
                                            figure_width_cm=3, outfile=f"{TMP}/w2.svg")
 wn = M.fit_warnings(cons, s, st, w, h, fpx, lh, pr)
 (ok if wn else bad)("warns at 3 cm", f"{len(wn)} warnings")
@@ -396,7 +396,7 @@ _bad = [t for t, v in M.PART_TYPES.items()
 # setting a size on a point marker must be reported, not silently dropped
 _p = make_wb(f"{TMP}/scale.xlsx", [("A", 1, "loxp", "site", "L", "", ""),
                                    ("A", 2, "cds", "g", "M", "", "")])
-(_o, _w, _h, _f, _l, _pr), _s, _c, _st = render(_p, figure_width_cm=16)
+(_o, _w, _h, _f, _l, _pr, _pt, _ti), _s, _c, _st = render(_p, figure_width_cm=16)
 _wn = M.fit_warnings(_c, _s, _st, _w, _h, _f, _l, _pr)
 (ok if any("position marker" in x for x in _wn) else bad)(
     "warns when size is set on a point marker")
@@ -469,7 +469,7 @@ _cv = make_wb(f"{TMP}/cv.xlsx",
               [("A", 1, "cds", "one", "M", "", "", "#88551E"),
                ("A", 2, "cds", "two", "M", "", "", "#E02E2E")])
 def _cvwarn(**over):
-    (o, w_, h_, f_, l_, pr_), s_, c_, st_ = render(_cv, figure_width_cm=16, **over)
+    (o, w_, h_, f_, l_, pr_, _pt, _ti), s_, c_, st_ = render(_cv, figure_width_cm=16, **over)
     _, pal_, _, _ = M.resolve_theme(s_)
     res_ = M.assign_palette(c_, {}, pal_, "auto")
     return any("colour-blind" in x for x in

@@ -74,6 +74,8 @@ Rows with an empty type are skipped, so blank spacer lines are fine.
 
 from __future__ import annotations
 
+import collections
+import math
 import os
 import re
 import sys
@@ -239,7 +241,12 @@ def check_hex(value, where):
     if not HEX_RE.match(v):
         raise SystemExit(f"{where}: {value!r} is not a colour. Use a hex code "
                          f"like #2C7FB8 (or #28B), with or without the #.")
-    return v.upper()
+    v = v.upper()
+    if len(v) == 4:
+        # #28B and #2288BB are one colour but not one string, and every
+        # de-duplication here compares strings. Normalise on the way in.
+        v = "#" + "".join(c * 2 for c in v[1:])
+    return v
 
 # ============================= PALETTES ===================================
 # Ordered lists. Colours are handed out in order of first appearance, so the
@@ -263,7 +270,7 @@ PALETTES = {
     # the 2B/5C/7D family - muted, heavy, good on white paper
     "deep": [
         "#2B4A7D", "#7D2B6B", "#2B7D4A", "#7D5C2B", "#5C2B7D", "#2B6B7D",
-        "#7D2B2B", "#4A7D2B", "#2B7D7D", "#6B2B7D", "#7D7D2B", "#2B2B7D",
+        "#7D2B2B", "#4A7D2B", "#2B7D7D", "#7D2B4A", "#7D7D2B", "#2B2B7D",
     ],
     # Okabe & Ito - the reference colour-blind-safe set
     "okabe-ito": [
@@ -288,12 +295,12 @@ PALETTES = {
     # soft pastels for dense maps where colour is secondary to the labels
     "pastel": [
         "#A8C8E8", "#F2B6C6", "#B8DEB8", "#F5D9A8", "#D4C2E8", "#A8DED6",
-        "#F0B8A8", "#D8E8A8", "#C2C8D0", "#E8C8E0",
+        "#F0B8A8", "#D8E8A8", "#C2C8D0", "#C8C2A8",
     ],
     # warm earth - plasmid-map feel
     "earth": [
         "#8C5A2B", "#B8863B", "#6B7D3A", "#3F6B5A", "#A34B2B", "#5C4A3A",
-        "#C9A227", "#7D5C7D", "#4A5A6B", "#9C6B4A",
+        "#C9A227", "#7D5C7D", "#4A5A6B", "#3A4A7D",
     ],
     # single-hue ramp: use when colour should NOT encode identity
     "ocean": [
@@ -424,6 +431,11 @@ RISER_GLYPHS = set(GLYPH_RISE)
 # Glyphs drawn as strokes rather than filled areas: they need more contrast
 # against the page than a solid shape does.
 LINE_GLYPHS = {"cut", "chevron", "wave", "fence", "vee", "step", "bracket"}
+
+# Glyphs that can actually show which way a part points. `dir = rev` on
+# anything else has nothing to flip, so it is reported rather than dropped
+# in silence - the same bargain as `size` on a position marker.
+DIRECTIONAL_GLYPHS = {"arrow", "tri", "spark", "chevron", "step", "repeat"}
 PT_PER_CM = 28.3465
 
 def _build_aliases():
@@ -553,13 +565,14 @@ def _as_bool(v, default=False):
     return str(v).strip().lower() in TRUTHY
 
 
-def _as_float(v, default=None):
+def _as_float(v, default=None, field=None):
     if v is None or str(v).strip() == "":
         return default
     try:
         return float(str(v).strip().replace(",", "."))
     except ValueError:
-        raise ValueError(f"Expected a number, got {v!r}")
+        where = f"settings sheet: {field} " if field else ""
+        raise SystemExit(f"{where}expected a number, got {v!r}.")
 
 
 def _sheet_rows(ws, expect=()):
@@ -591,6 +604,23 @@ TEXT_SETTINGS = ("outfile", "anchor_side", "export_prefix", "theme", "style",
                  "label_repeat", "row_titles")
 
 
+def _open_workbook(path):
+    """openpyxl raises a zipfile error on anything that is not a real .xlsx,
+    which reads as a crash. The usual causes are a file still open in Excel,
+    a .xls saved under the wrong extension, or a half-finished download."""
+    from openpyxl import load_workbook as _lw
+    try:
+        return _lw(path, data_only=True)
+    except (SystemExit, FileNotFoundError, IsADirectoryError):
+        raise          # these already carry a clear message of their own
+    except Exception as exc:
+        raise SystemExit(
+            f"{os.path.basename(path)} could not be read as an Excel "
+            f"workbook ({type(exc).__name__}).\nIf it is open in Excel, "
+            f"close it and try again. If it is an old .xls, open it and "
+            f"Save As .xlsx.")
+
+
 def load_workbook_config(path):
     try:
         from openpyxl import load_workbook
@@ -599,16 +629,22 @@ def load_workbook_config(path):
                          "Install it with:  python3 -m pip install openpyxl")
 
     base = os.path.dirname(os.path.abspath(path))
-    wb = load_workbook(path, data_only=True)
+    wb = _open_workbook(path)
     names = {n.strip().lower(): n for n in wb.sheetnames}
 
     settings = dict(SETTINGS)
     # relative outputs land beside the workbook, not beside the script
     settings["_basedir"] = base
     if "settings" in names:
+        unknown = []
         for r in _sheet_rows(wb[names["settings"]], ("setting", "value")):
             k = _norm_key(r.get("setting"))
-            if not k or k.startswith("_") or k not in settings:
+            if not k or k.startswith("_"):
+                continue
+            if k not in settings:
+                v = r.get("value")
+                if v is not None and str(v).strip() != "":
+                    unknown.append(str(r.get("setting")).strip())
                 continue
             v = r.get("value")
             if v is None or str(v).strip() == "":
@@ -618,9 +654,38 @@ def load_workbook_config(path):
             elif k in TEXT_SETTINGS:
                 settings[k] = str(v).strip()
             else:
-                settings[k] = _as_float(v)
+                settings[k] = _as_float(v, field=k)
+        if unknown:
+            # the same mistake as a mistyped flag, and it used to be just
+            # as silent: the figure came out with the default and nothing
+            # said why
+            near = ", ".join(sorted(set(unknown))[:5])
+            print(f"note       settings sheet: no such setting as {near} "
+                  f"- ignored. Run --list for the names.")
+
     if settings["figure_height_cm"] == 0:
         settings["figure_height_cm"] = None
+
+    settings["outfile"] = check_outfile(settings["outfile"])
+    pref = str(settings["export_prefix"] or "").strip()
+    if os.path.isabs(pref) or os.pardir in pref.replace("\\", "/").split("/"):
+        raise SystemExit(
+            "settings sheet: export_prefix must be a plain name, not a path. "
+            "The per-cassette files are written beside the workbook.")
+    for k in ("figure_width_cm", "figure_height_cm", "export_width_cm",
+              "label_pt", "cassette_spacing", "min_font_pt", "min_label_pt",
+              "line_thickness", "backbone_thickness"):
+        v = settings.get(k)
+        if v is not None and not math.isfinite(v):
+            raise SystemExit(
+                f"settings sheet: {k} is {v}, which is not a number cistron "
+                f"can draw with.")
+        if v is not None and v <= 0:
+            blank = (", or leave it blank to let the drawing decide"
+                     if k == "figure_height_cm" else "")
+            raise SystemExit(
+                f"settings sheet: {k} is {v}, which cannot be drawn. "
+                f"Use a positive number{blank}.")
     if str(settings["anchor_side"]).lower() not in ("left", "right"):
         raise SystemExit(f"anchor_side must be 'left' or 'right', got {settings['anchor_side']!r}")
     pm = str(settings["palette_mode"]).strip().lower()
@@ -708,7 +773,18 @@ def load_workbook_config(path):
 # ------------------------ palette assignment -----------------------------
 # How far apart two automatically chosen colours should be, CIE76. Below
 # about 20 a reader reads them as the same colour at glyph size.
+# Palettes whose colours are a measured progression rather than a set of
+# labels. Adjacent steps are meant to look similar, so two parts landing on
+# neighbouring steps is a real problem for the reader even though the
+# palette is doing exactly what it was designed to do - the advice has to
+# differ, which is why the tool needs to know which is which.
+ORDERED_PALETTES = {"viridis", "cividis", "ocean", "grayscale"}
+
 COLOUR_SPACING = 26.0
+# What one repair pass tries to achieve between any two colours in a figure.
+# Below this, two glyphs read as the same colour at glyph size. The figure is
+# still drawn when a palette cannot reach it, and the sanity check says so.
+MIN_APART = 18.0
 
 
 def extend_palette(palette, needed):
@@ -721,17 +797,116 @@ def extend_palette(palette, needed):
     out = list(palette)
     if not out or needed <= len(out):
         return out
-    # waves of tints and shades, widest first so the earliest extras are
-    # the most distinct
-    for factor, toward in ((0.50, "#FFFFFF"), (0.55, None), (0.26, "#FFFFFF"),
-                           (0.76, None), (0.72, "#FFFFFF")):
-        for base in palette:
-            if len(out) >= needed:
-                return out
-            cand = mix(base, toward, factor) if toward else darken(base, factor)
-            if all(colour_distance(cand, c) >= COLOUR_SPACING * 0.7 for c in out):
+    # Waves of tints and shades, widest first, so the earliest extras are the
+    # most distinct. The spacing floor relaxes in passes rather than holding
+    # fixed: a narrow palette - grayscale above all - cannot produce anything
+    # 18 units from its own steps, and returning six colours for a figure that
+    # needs nine put two genes in the same grey. A close colour is worse than
+    # a distant one and better than an identical one, and whatever spacing we
+    # end up with is reported by the sanity check.
+    waves = ((0.50, "#FFFFFF"), (0.55, None), (0.26, "#FFFFFF"),
+             (0.76, None), (0.72, "#FFFFFF"), (0.38, "#FFFFFF"),
+             (0.64, None), (0.14, "#FFFFFF"), (0.86, None))
+    for floor in (COLOUR_SPACING * 0.7, COLOUR_SPACING * 0.45,
+                  COLOUR_SPACING * 0.25, 0.0):
+        for factor, toward in waves:
+            for base in palette:
+                if len(out) >= needed:
+                    return out
+                cand = mix(base, toward, factor) if toward else darken(base, factor)
+                if cand in out:
+                    continue          # never an exact repeat, at any floor
+                if floor and any(colour_distance(cand, c) < floor for c in out):
+                    continue
                 out.append(cand)
     return out
+
+
+# A palette's spare colours depend on the palette alone, never on how many
+# parts a figure happens to have. extend_palette appends in a fixed order, so
+# a longer run is a prefix-compatible extension of a shorter one; caching one
+# generous run per palette is what lets every figure agree with every other.
+_SPARE_CACHE = {}
+
+
+def palette_spares(palette):
+    """The extra colours behind a palette, in a fixed order."""
+    key = tuple(palette)
+    if key not in _SPARE_CACHE:
+        target = max(48, len(palette) * 3)
+        _SPARE_CACHE[key] = extend_palette(list(palette), target)[len(palette):]
+    return _SPARE_CACHE[key]
+
+
+def _h(seed, extra=b""):
+    """A stable number for a label, or for a (label, colour) pair. The label
+    alone decides it, which is what keeps a colour attached to its label."""
+    import hashlib
+    return int.from_bytes(hashlib.sha1(seed + extra).digest()[:8], "big")
+
+
+def seed_of(key):
+    """The bytes a (type, label) key hashes as: its label where it has one,
+    its type otherwise, so an unnamed part still gets a colour of its own."""
+    return (key[1] or key[0]).lower().encode("utf-8")
+
+
+def separate_colours(resolved, auto, whole, pinned_lab, is_ramp, target):
+    """Move the few colours that would read as another colour in the figure.
+
+    Assignment is per label and knows nothing about what else ended up on
+    the page; this is the pass that looks at the page. Each round finds one
+    pair that is too close - in normal vision, and for a red-green
+    colour-blind reader unless the palette is an ordered ramp - and moves
+    the weaker claim of the two to the roomiest colour nobody is using.
+    It stops as soon as nothing is too close, or nothing roomier exists."""
+    import itertools
+    for _ in range(3 * len(auto) + 6):
+        lab = {k: _lab_cached(resolved[k]) for k in auto}
+
+        def _apart(a, b):
+            """Two colours are apart when they are apart for everyone: far
+            enough in normal vision, and not collapsed together for a
+            red-green colour-blind reader. Checking only normal vision let
+            pairs through that merge for about one man in twelve."""
+            if _lab_gap(lab[a], lab[b]) < target:
+                return False
+            if is_ramp:
+                return True
+            return all(colour_distance(resolved[a], resolved[b], k) >= CVD_CLASH
+                       for k in _VISION[1:])
+
+        clash = next(((x, y) for x, y in itertools.combinations(auto, 2)
+                      if not _apart(x, y)), None)
+        if clash is None:
+            # also against the colours the user pinned, which do not move
+            clash = next(((x, x) for x in auto
+                          for pl in pinned_lab
+                          if _lab_gap(lab[x], pl) < SAME_COLOUR), None)
+        if clash is None:
+            break
+        x, y = clash
+        loser = x if (x == y or _h(seed_of(x)) < _h(seed_of(y))) else y
+        keep = [v for k, v in resolved.items() if k != loser]
+        used = set(keep)
+        free = [c for c in whole if c not in used]
+        if not free:
+            break
+        # Distance from everything else in the figure, pins included, and
+        # under both common forms of colour blindness as well as normal
+        # vision - a pair that separates for me and merges for a red-green
+        # colour-blind reader is still a pair the reader cannot use.
+        def _room(c):
+            return min(min(_lab_gap(_lab_cached(c, k), _lab_cached(o, k))
+                           for k in _VISION) for o in keep)
+
+        room = {c: _room(c) for c in free}
+        best = max(free, key=lambda c: room[c])
+        now = min(min(_lab_gap(_lab_cached(resolved[loser], k), _lab_cached(o, k))
+                      for k in _VISION) for o in keep)
+        if room[best] <= now:
+            break                          # nothing roomier exists; leave it
+        resolved[loser] = best
 
 
 def assign_palette(constructs, colors, palette, mode):
@@ -746,19 +921,43 @@ def assign_palette(constructs, colors, palette, mode):
     The automatic step is deterministic in the LABEL, not in where the part
     happens to appear. Assigning in order of first appearance meant that
     inserting one construct at the top, or sorting the sheet, silently
-    recoloured everything below it - so a figure you had already published
-    came back different. Here each label hashes to a preferred slot and
-    probes forward if that slot is taken, which means:
+    recoloured everything below it, so a figure you had already published
+    came back different.
 
-      - the same gene keeps its colour when you add, remove or reorder rows
-      - the same gene gets the same colour in every figure drawn from the
-        same palette, so a set of figures agrees with itself
-      - nothing shifts just because you renamed a different part
+    Each label instead scores every colour in the palette with a hash of
+    (label, colour) and takes the best one still free - rendezvous hashing.
+    The ranking belongs to the label, so it does not depend on how many
+    parts the figure has or what order they come in. Guaranteed:
+
+      - reordering rows, or sorting the sheet, changes nothing at all
+      - every part in a figure gets a colour visibly different from every
+        other, in normal vision and under both common forms of red-green
+        colour blindness, as far as the palette allows
+
+    NOT guaranteed, and the reason is a real trade-off rather than an
+    oversight. Telling colours apart is a property of the whole figure, so
+    the repair pass that enforces it has to look at the whole figure, and
+    when a newcomer forces a rearrangement some other labels move with it.
+    Measured over many random figures, adding or removing one part moves a
+    median of 3 to 35 per cent of the colours already on the page, against
+    nearly all of them before this was rewritten. Where no colours are too
+    close, nothing moves at all.
+
+    The other order - never move a colour, and let two genes come out the
+    same - is a one-line change to the repair loop, and is the wrong
+    default: two parts you cannot tell apart is a broken figure, while a
+    part that changed shade between drafts is a nuisance. Pin the labels
+    that must not move in the colors sheet; a pin is never touched.
+
+    Using the palette's own colours until they run out, and only then its
+    spares, is what makes this hold: both lists are fixed per palette and
+    are never sized to the figure.
 
     Pinning a label in the colors sheet overrides all of this; writing
     `auto` there releases it back to the palette.
     """
     import hashlib
+    import itertools
 
     # what still needs a colour, and what is already pinned
     need, resolved = [], {}
@@ -780,67 +979,99 @@ def assign_palette(constructs, colors, palette, mode):
             resolved[key] = NEUTRAL
         return resolved
 
-    # enough colours for every part, and for anything already pinned, so an
-    # automatic colour never lands on a pin either
-    pool = extend_palette(palette, len(need) + len(resolved) + 2)
-    n = len(pool)
-    ordered = sorted(need, key=lambda k: (k[1].lower(), k[0]))
+    # Assignment uses the palette's own colours first and reaches for a spare
+    # only once every one of them is spoken for. Both lists are fixed per
+    # palette and independent of this figure, so a label's colour is a
+    # function of the label and the palette: adding a tenth part cannot
+    # repaint the first nine.
+    spares = palette_spares(palette)
+    # A palette is written best-first. Leading colours are weighted up so a
+    # three-part figure is drawn in the palette's strongest three rather
+    # than three arbitrary members of it, while the choice stays a function
+    # of the label alone.
+    WEIGHT = [1.0 / (1.0 + i) ** 0.55
+              for i in range(max(len(palette), len(spares)) + 1)]
+    pinned_lab = [_lab_cached(v) for v in resolved.values()]
+    ordered = sorted(need, key=lambda k: ((k[1] or "").lower(), k[0]))
 
-    def slot(key):
-        seed = (key[1] or key[0]).lower().encode("utf-8")
-        return int.from_bytes(hashlib.sha1(seed).digest()[:4], "big") % n
+    def _score(key, i):
+        """How much a label wants colour i. Weighted rendezvous hashing: the
+        label's own hash decides, but earlier colours carry more weight, so
+        a palette's leading colours - the ones its author put first, and the
+        ones a small figure should be drawn in - are preferred without the
+        choice ever depending on the rest of the figure."""
+        u = (_h(seed_of(key), b"|%d" % i) + 1) / 2.0 ** 64
+        return WEIGHT[i] / -math.log(u)
 
-    # When there are more parts than the pool can hold, spacing is not
-    # achievable and checking for it costs O(parts x pool) per part. Fall
-    # back to plain hashing: the figure is already past what colour can
-    # carry, and the sanity check says so.
-    if len(ordered) + len(resolved) > n:
-        taken = set()
-        for key in ordered:
-            start = slot(key)
-            pick = next((i for i in ((start + k) % n for k in range(n))
-                         if i not in taken), start)
-            taken.add(pick)
-            resolved[key] = pool[pick]
-        return resolved
+    def place(keys, pool, reserved):
+        """Give each label the free colour it ranks highest.
 
-    pool_lab = [_lab_cached(c) for c in pool]
-    used_lab = [_lab_cached(v) for v in resolved.values()]
-    for key in ordered:
-        start = slot(key)
-        best, best_gap = None, -1.0
-        for step in range(n):
-            i = (start + step) % n
-            gap = min((_lab_gap(pool_lab[i], u) for u in used_lab), default=1e9)
-            if gap >= COLOUR_SPACING:
-                best = i
-                break
-            if gap > best_gap:            # remember the roomiest fallback
-                best, best_gap = i, gap
-        used_lab.append(pool_lab[best])
-        resolved[key] = pool[best]
+        Each label scores every colour with a hash of (label, colour) and
+        takes the best one still free; where two labels want the same one,
+        the higher score keeps it and the loser falls to its next choice.
+        The ranking belongs to the label, so a label that no newcomer
+        outranks does not move - which is the point, since a figure you have
+        already published should not come back recoloured because you added
+        one part to it."""
+        n = len(pool)
+        rank = {k: sorted(range(n), key=lambda i: -_score(k, i)) for k in keys}
+        at = dict.fromkeys(keys, 0)        # how far down its own list each is
+        owner, left, queue = {}, [], list(keys)
+        while queue:
+            key = queue.pop(0)
+            while at[key] < n and rank[key][at[key]] in reserved:
+                at[key] += 1
+            if at[key] >= n:
+                left.append(key)
+                continue
+            i = rank[key][at[key]]
+            sitting = owner.get(i)
+            if sitting is None:
+                owner[i] = key
+            elif _score(key, i) > _score(sitting, i):
+                owner[i] = key             # the stronger claim keeps it
+                at[sitting] += 1
+                queue.append(sitting)
+            else:
+                at[key] += 1
+                queue.append(key)
+        for i, key in owner.items():
+            resolved[key] = pool[i]
+        return left
+
+    # A colour that would land on something already pinned is held back, so
+    # an automatic part never quietly matches a pinned one. This has to
+    # cover the spares as well as the palette: screening only the palette
+    # meant any figure long enough to reach the spares could do exactly
+    # that, and did, in about one figure in fifty.
+    def _clear_of_pins(pool):
+        return {i for i, c in enumerate(pool)
+                if any(_lab_gap(_lab_cached(c), pl) < SAME_COLOUR
+                       for pl in pinned_lab)}
+
+    overflow = place(ordered, list(palette), _clear_of_pins(palette))
+    if overflow and spares:
+        overflow = place(overflow, spares, _clear_of_pins(spares))
+
+    # Which labels the tool chose for, and everything it may choose from.
+    auto = [k for k in ordered if k in resolved]
+    whole = list(palette) + spares
+    # An ordered ramp is a measured progression; its neighbouring steps are
+    # meant to resemble each other, and no shuffling makes a colour-blind-
+    # safe set out of one. Chasing that moved 44 per cent of a figure's
+    # colours to end up no further apart, so a ramp is held to plain visible
+    # difference and the sanity check reports the rest.
+    is_ramp = any(list(palette) == list(PALETTES[n]) for n in ORDERED_PALETTES)
+    target = SAME_COLOUR if is_ramp else MIN_APART
+    separate_colours(resolved, auto, whole, pinned_lab, is_ramp, target)
+
+    # More parts than the palette and all of its spares can hold. Colour has
+    # stopped carrying identity by now and the sanity check says so; repeat
+    # the pool in a fixed order rather than dropping anyone.
+    if overflow:
+        for key in overflow:
+            resolved[key] = whole[_h(seed_of(key)) % len(whole)]
     return resolved
-
-
-# --------------------------- shorthand (optional) ------------------------
-def parse_element(token):
-    fields = [f.strip() for f in str(token).split(":")]
-    t = ALIASES.get(fields[0].lower(), fields[0].lower())
-    el = {"type": t, "label": "", "dir": "fwd", "join": False, "color": "", "size": None}
-    for f in fields[1:]:
-        low = f.lower()
-        if f.upper() in SIZE_W:
-            el["size"] = f.upper()
-        elif low == "join":
-            el["join"] = True
-        elif low in ("rev", "reverse"):
-            el["dir"] = "rev"
-        elif f.startswith("#"):
-            el["color"] = f
-        else:
-            el["label"] = f
-    return el
-
 
 def parse_cassettes(rows):
     return [{"name": f"cassette {i}", "parts": [parse_element(t) for t in row]}
@@ -909,11 +1140,26 @@ def outside_needed(p, mode):
 
 
 def top_ink(p, st):
-    """How far the glyph's ink reaches above the backbone."""
+    """How far the glyph's ink reaches above the backbone.
+
+    A riser stands on the backbone and declares its own height. Everything
+    else is drawn around it and reaches half the body height - except two
+    cases that put ink above that line without being risers, and whose
+    labels sat too close before they were counted here: an oriT's tick, and
+    the round line caps the stroked glyphs are drawn with."""
     g = glyph_of(p)
+    sw0 = st.get("_sw") or st["stroke_w"]
     if g in GLYPH_RISE:
-        return GLYPH_RISE[g] * st["h"]
-    return H * st["h"] / 2
+        # the declared height is the path; the stroke is drawn centred on it
+        # and its cap rounds off above that, which on a thick style ate most
+        # of the clearance the label above was given
+        return GLYPH_RISE[g] * st["h"] + (sw0 + 1) / 2
+    half = H * st["h"] / 2
+    sw = sw0
+    if g == "circle_t":
+        r = min(SIZE_W.get(default_size(p), H), H * st["h"] * 0.8) / 2
+        return max(half, r + 6 + sw / 2)
+    return half + sw / 2
 
 
 # --------------------------- glyphs ---------------------------
@@ -1137,7 +1383,10 @@ def _step(x, cy, w, color, st, direction):
     lw = max(st["_sw"] + 0.4, 1.6)
     g = H * st["h"] * 0.18
     if direction == "rev":
-        d = f'M {x:.1f},{cy-g:.1f} H {x+w*0.6:.1f} M {x+w*0.4:.1f},{cy+g:.1f} H {x+w:.1f}'
+        # the mirror of the forward glyph about the slot centre: the
+        # full strand swaps sides. Shortening both strands drew a
+        # gapped duplex, a different thing from a flipped sticky end.
+        d = f'M {x:.1f},{cy-g:.1f} H {x+w:.1f} M {x+w*0.4:.1f},{cy+g:.1f} H {x+w:.1f}'
     else:
         d = f'M {x:.1f},{cy-g:.1f} H {x+w:.1f} M {x:.1f},{cy+g:.1f} H {x+w*0.6:.1f}'
     return (f'<path d="{d}" fill="none" stroke="{c}" stroke-width="{lw:.1f}" '
@@ -1246,8 +1495,8 @@ def draw_part(p, x, cy, resolved, st, w=None, mode="none", px=11.0,
         "arrow":    lambda: _cds(x, cy, w, c, d, st),
         "tag":      lambda: _tag(x, cy, w, c, st),
         "tri":      lambda: _loxp(x, cy, w, c, st, d),
-        "spark":    lambda: _promoter(x, cy, c, d, st),
-        "tee":      lambda: _terminator(x, cy, c, st),
+        "spark":    lambda: _promoter(x + (w - PROM_W) / 2, cy, c, d, st),
+        "tee":      lambda: _terminator(x + (w - PROM_W) / 2, cy, c, st),
         "dome":     lambda: _dome(x, cy, w, c, st),
         "circle":   lambda: _circle(x, cy, w, c, st),
         "circle_t": lambda: _circle(x, cy, w, c, st, tick=True),
@@ -1279,7 +1528,16 @@ def draw_part(p, x, cy, resolved, st, w=None, mode="none", px=11.0,
 
 
 def esc(t):
-    return (str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    """Text for SVG character data.
+
+    The C0 control characters are not merely unusual in XML, they are
+    forbidden, apart from tab and the two newline characters. One of
+    them in a label - pasted in from somewhere else - produced a file
+    that no parser and no vector editor would open, written out here
+    without a word of complaint."""
+    t = "".join(c for c in str(t)
+                if c in "\t\n\r" or ord(c) >= 0x20)
+    return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def construct_width(parts, mode="none", px=11.0):
@@ -1349,12 +1607,18 @@ def build_legend(constructs, x0, y0, wrap_w, resolved, st, font_px=BASE_FONT_PX)
     svg, x, y, used_w = [], x0, y0 + row_h / 2, x0
     for p in items:
         label = legend_label(p)
-        entry_w = GLYW + 8 + len(label) * CHAR + PAD
+        entry_w = GLYW + 8 + text_width(label, font_px) + PAD
         if x > x0 and x + entry_w > x0 + wrap_w:
             x, y = x0, y + row_h
         dx, dy = legend_offset(p, GLYW, st)
-        svg.append(draw_part({**p, "size": LEGEND_GLYPH}, x + dx, y + dy,
-                             resolved, st, w=GLYW))   # mode stays "none" here
+        # A length-bearing part is shown at the legend's own size; a point
+        # feature keeps the one width it is always drawn at, centred in the
+        # slot. Forcing both to GLYW drew a loxP twice the size in the key
+        # as on the backbone.
+        shown = dict(p, size=LEGEND_GLYPH) if is_scalable(p) else p
+        gw = GLYW if is_scalable(p) else part_width(shown, "none", font_px)
+        svg.append(draw_part(shown, x + dx + (GLYW - gw) / 2, y + dy,
+                             resolved, st, w=gw))      # mode stays "none" here
         svg.append(f'<text x="{x+GLYW+8:.0f}" y="{y+font_px*0.34:.0f}" '
                    f'font-size="{font_px:.1f}" font-family="{st["font"]}" '
                    f'fill="{st["text"]}">{esc(label)}</text>')
@@ -1364,6 +1628,63 @@ def build_legend(constructs, x0, y0, wrap_w, resolved, st, font_px=BASE_FONT_PX)
 
 
 # --------------------------- render ---------------------------
+OUTPUT_EXTS = (".svg", ".png", ".pdf")
+
+# What build_figure reports back. A named tuple rather than a bare one so
+# that measuring something new does not break every caller that unpacked
+# the old length.
+Figure = collections.namedtuple(
+    "Figure", "path width height legend_px legend_h pitch_ratio row_pitch tiers")
+
+
+def check_outfile(name, field="outfile"):
+    """Vet an output path before anything is drawn.
+
+    This runs at load time, not at write time. It used to run after the
+    drawing had already been written to that path, so a workbook named in
+    `outfile` was replaced by an SVG and then reported as an error - the
+    user's constructs were gone and the message told them their figure was
+    in the file that used to hold them."""
+    raw = str(name or "").strip()
+    if not raw:
+        raise SystemExit(f"settings sheet: {field} is empty.")
+    raw = os.path.expanduser(raw)
+    ext = os.path.splitext(raw)[1].lower()
+    if ext not in OUTPUT_EXTS:
+        raise SystemExit(
+            f"settings sheet: {field} is {raw!r}. cistron writes "
+            f"{', '.join(OUTPUT_EXTS)}, and refuses to write over anything "
+            f"else - that is how a workbook gets overwritten by its own "
+            f"figure. Give it a name ending in .svg, .png or .pdf.")
+    if os.pardir in raw.replace("\\", "/").split("/"):
+        raise SystemExit(
+            f"settings sheet: {field} contains '..'. The figure is written "
+            f"beside the workbook; give a plain file name, or a full path.")
+    return raw
+
+
+def _write_atomic(path, text):
+    """Write beside the target and rename over it, so a failure part-way
+    leaves the previous file untouched instead of truncated."""
+    import tempfile
+    d = os.path.dirname(path) or "."
+    try:
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".part")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        raise SystemExit(f"cannot write {path}: {exc.strerror or exc}")
+
+
 def build_figure(constructs, settings, resolved, st, outfile=None,
                  show_legend=None, write=True):
     width_cm = settings["figure_width_cm"]
@@ -1413,7 +1734,7 @@ def build_figure(constructs, settings, resolved, st, outfile=None,
         font_px = new_px
 
     body, y = [], MARGIN
-    max_pitch = 0.0
+    max_pitch, max_tiers = 0.0, 0
     if show_legend:
         body.append(leg_svg)
         y += leg_h + 18
@@ -1461,6 +1782,7 @@ def build_figure(constructs, settings, resolved, st, outfile=None,
                 seen.add(key)
 
         placed, ntiers = plan_outside(parts, xs, widths, st, mode, lpx, allow)
+        max_tiers = max(max_tiers, ntiers)
         stack = (ntiers * tier_h + 8) if ntiers else 0
         above = stack if mode != "below" else 0
         below = stack if mode == "below" else 0
@@ -1485,6 +1807,8 @@ def build_figure(constructs, settings, resolved, st, outfile=None,
                 f'font-size="{tpx:.1f}" font-family="{st["font"]}" font-weight="600" '
                 f'fill="{st["text"]}">{esc(it.get("name",""))}</text>')
         elif rtitle == "above":
+            lab_l = min(lab_l, x0)
+            lab_r = max(lab_r, x0 + text_width(it.get("name", ""), tpx))
             body.append(
                 f'<text x="{x0:.1f}" y="{cy - ink_top - above - 7:.1f}" '
                 f'font-size="{tpx:.1f}" font-family="{st["font"]}" font-weight="600" '
@@ -1492,20 +1816,37 @@ def build_figure(constructs, settings, resolved, st, outfile=None,
 
         down = (mode == "below")
         base = (cy + ink_bot + 7 + lpx * 0.8) if down else (cy - ink_top - 7)
+        leaders, halos, texts = [], [], []
         for p, cx, tier in placed:
             ty = base + tier * tier_h if down else base - tier * tier_h
             if tier:        # a leader keeps an offset label tied to its glyph
                 y2 = (cy + ink_bot + 2) if down else (cy - top_ink(p, st) - 2)
                 y1 = (ty - lpx * 0.8) if down else (ty + 3)
-                body.append(f'<line x1="{cx:.1f}" y1="{y1:.1f}" x2="{cx:.1f}" '
-                            f'y2="{y2:.1f}" stroke="{st["text"]}" '
-                            f'stroke-width="0.7" opacity="0.45"/>')
-            body.append(f'<text x="{cx:.1f}" y="{ty:.1f}" text-anchor="middle" '
-                        f'font-size="{lpx:.1f}" font-family="{st["font"]}" '
-                        f'fill="{st["text"]}">{esc(p["label"])}</text>')
+                leaders.append(
+                    f'<line x1="{cx:.1f}" y1="{y1:.1f}" x2="{cx:.1f}" '
+                    f'y2="{y2:.1f}" stroke="{st["text"]}" '
+                    f'stroke-width="0.7" opacity="0.45"/>')
+            # The halo is a second copy of the text, drawn underneath in
+            # the background colour, so a leader passing behind the label
+            # is interrupted by it. `paint-order="stroke"` would say this
+            # in one element, but cairosvg ignores that property and paints
+            # the outline over the glyphs instead, which erased every label
+            # from the PNG and PDF this tool writes.
+            common = (f'<text x="{cx:.1f}" y="{ty:.1f}" text-anchor="middle" '
+                      f'font-size="{lpx:.1f}" font-family="{st["font"]}"')
+            halos.append(f'{common} fill="none" stroke="{st["bg"]}" '
+                         f'stroke-width="3.2" stroke-linejoin="round">'
+                         f'{esc(p["label"])}</text>')
+            texts.append(f'{common} fill="{st["text"]}">'
+                         f'{esc(p["label"])}</text>')
             half = text_width(p["label"], lpx) / 2
             lab_l = min(lab_l, cx - half)
             lab_r = max(lab_r, cx + half)
+        # every leader first, then every halo, then every label: a halo
+        # drawn after a neighbouring label would rub that label out
+        body.extend(leaders)
+        body.extend(halos)
+        body.extend(texts)
         max_pitch = max(max_pitch, pitch)
         y += pitch
 
@@ -1535,11 +1876,9 @@ def build_figure(constructs, settings, resolved, st, outfile=None,
     # afterwards failed silently wherever the folder refuses deletes, which
     # left a stray dotfile behind.
     if write:
-        os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
-        with open(outpath, "w") as fh:
-            fh.write(svg)
-    return (outpath, natW, natH, (font_px if show_legend else None), leg_h,
-            max_pitch / max(row_h, 1))
+        _write_atomic(outpath, svg)
+    return Figure(outpath, natW, natH, (font_px if show_legend else None),
+                  leg_h, max_pitch / max(row_h, 1), max_pitch, max_tiers)
 
 
 def export_each(constructs, settings, resolved, st):
@@ -1547,8 +1886,16 @@ def export_each(constructs, settings, resolved, st):
     s = dict(settings)
     s["figure_width_cm"] = settings["export_width_cm"]
     s["figure_height_cm"] = None
+    # Two names that differ only in a character the filename cannot hold -
+    # "A/1" and "A_1" - used to flatten onto one file, and the second
+    # quietly replaced the first. Number any repeat instead.
+    used = {}
     for i, c in enumerate(constructs, 1):
-        safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in c.get("name", str(i)))
+        safe = "".join(ch if (ch.isalnum() or ch in "-_") else "_"
+                       for ch in c.get("name", str(i))) or str(i)
+        used[safe] = used.get(safe, 0) + 1
+        if used[safe] > 1:
+            safe = f"{safe}-{used[safe]}"
         p, *_ = build_figure([c], s, resolved, st, outfile=f"{prefix}_{safe}.svg",
                              show_legend=False)
         print(f"wrote {p}")
@@ -1593,6 +1940,10 @@ _CVD = {
 # CIE76 thresholds. Deliberately conservative: a warning nobody trusts is
 # worse than one that occasionally stays quiet, so this errs toward silence.
 CVD_CLASH = 15.0
+# Normal vision plus the two common forms of red-green colour blindness. A
+# pair that separates for most readers and merges for a colour-blind one is
+# still a pair that cannot be used, so colour assignment checks all three.
+_VISION = (None, "protanopia", "deuteranopia")
 SAME_COLOUR = 12.0
 
 
@@ -1627,8 +1978,124 @@ def colour_distance(a, b, kind=None):
 
 
 # --------------------------- sanity check ---------------------------
+def ignored_setting_warnings(constructs):
+    """A cell the drawing cannot honour is reported, never dropped in
+    silence: `size` on a part with no length, `dir` on a symmetrical shape."""
+    out = []
+
+    # a size set on a position marker, which cannot honour it. Only worth
+    # saying when the requested size would have changed something; writing
+    # XS on a part that is XS anyway is harmless.
+    sized = [(p["label"] or p["type"], p["type"])
+             for c in constructs for p in c["parts"]
+             if (p.get("size") and not is_scalable(p)
+                 and SIZE_W.get(p["size"]) != SIZE_W.get(default_size(p)))]
+    if sized:
+        out.append(
+            f"size is set on {len(sized)} position marker(s) and was "
+            f"ignored: {_first_of_each(sized)}. These mark a point in the "
+            f"sequence, so they draw at one fixed width; only length-bearing "
+            f"parts (cds, homology_arm, ltr, ...) respond to XS/S/M/L.")
+
+    # dir = rev on a glyph with no direction to show
+    turned = [(p.get("label") or p["type"], p["type"])
+              for c in constructs for p in c["parts"]
+              if (str(p.get("dir", "fwd")).lower() == "rev"
+                  and glyph_of(p) not in DIRECTIONAL_GLYPHS)]
+    if turned:
+        kinds = sorted({t for t, v in PART_TYPES.items()
+                        if v["glyph"] in DIRECTIONAL_GLYPHS})
+        out.append(
+            f"dir = rev is set on {len(turned)} part(s) whose shape is "
+            f"symmetrical, so nothing changed: {_first_of_each(turned)}. "
+            f"Only parts drawn with a pointed shape can show direction "
+            f"({', '.join(kinds[:6])}, ...). Leave dir blank on the rest.")
+    return out
+
+
+def _first_of_each(pairs, keep=4):
+    """One example per part type, so a 90-row sheet does not print 90 names."""
+    seen, uniq = set(), []
+    for lab, t in pairs:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(f"{lab} ({t})")
+    more = f" and {len(uniq)-keep} more" if len(uniq) > keep else ""
+    return ", ".join(uniq[:keep]) + more
+
+
+def colour_warnings(constructs, resolved, mode, legend_px, st=None):
+    """Colours in this figure that a reader cannot tell apart.
+
+    Only the parts actually drawn are compared, and only when colour
+    is doing the work: if every glyph carries its own name and there
+    is no legend to match against, two parts sharing a colour costs
+    the reader nothing and saying so is noise."""
+    warn = []
+    # 3c. colours that collapse for a colour-blind reader, or that are too
+    # close for anyone. Only the parts actually in this figure are compared,
+    # and only when colour is doing the work: if every glyph carries its own
+    # name and there is no legend to match against, two parts sharing a
+    # colour costs the reader nothing, and warning about it is noise.
+    colour_is_key = (mode == "none") or bool(legend_px)
+    # Compare what is actually painted, not what was chosen. A `tint` style
+    # washes every fill 58 per cent towards the background, which squeezes
+    # the distance between two colours by about two and a half times, and a
+    # `hollow` style puts the identity in the outline and leaves every fill
+    # the same. Reading `resolved` here meant two parts could come out the
+    # same colour on the page with nothing said about it.
+    # ink() wants the resolved stroke width, which only build_figure sets
+    sty = None if st is None else dict(st)
+    if sty is not None and "_sw" not in sty:
+        sty["_sw"] = sty.get("stroke_w", 1.0)
+
+    def _as_drawn(colour):
+        if sty is None:
+            return colour
+        fill, stroke, _ = ink(colour, sty)
+        if sty.get("fill") == "hollow" or fill == sty.get("bg"):
+            return stroke if stroke not in (None, "none") else fill
+        return fill
+
+    used = {}
+    for c in constructs:
+        for p in c["parts"]:
+            if resolved is None:
+                break
+            used.setdefault(_as_drawn(part_color(p, resolved)), set()).add(
+                p.get("label") or p["type"])
+    cols = sorted(used)
+    same, cvd = [], []
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            a, b = cols[i], cols[j]
+            na = ", ".join(sorted(used[a])[:2])
+            nb = ", ".join(sorted(used[b])[:2])
+            if colour_distance(a, b) < SAME_COLOUR:
+                same.append((na, nb))
+                continue
+            if min(colour_distance(a, b, k) for k in _CVD) < CVD_CLASH:
+                cvd.append((na, nb))
+    if same and colour_is_key:
+        pairs = "; ".join(f"{x} vs {y}" for x, y in same[:3])
+        warn.append(
+            f"{len(same)} pair(s) of parts are nearly the same colour: {pairs}"
+            f"{f' and {len(same)-3} more' if len(same) > 3 else ''}. Pin one of "
+            f"each pair in the colors sheet, or pick a palette with more range.")
+    if cvd and colour_is_key:
+        pairs = "; ".join(f"{x} vs {y}" for x, y in cvd[:3])
+        warn.append(
+            f"{len(cvd)} pair(s) of parts become indistinguishable to a "
+            f"red-green colour-blind reader: {pairs}"
+            f"{f' and {len(cvd)-3} more' if len(cvd) > 3 else ''}. Roughly 1 in "
+            f"12 men is affected. palette = okabe-ito, tol-bright or tol-muted "
+            f"avoids it, or name the glyphs with labels = outside.")
+    return warn
+
+
 def fit_warnings(constructs, settings, st, natW, natH, legend_px, leg_h,
-                 pitch_ratio=1.0, resolved=None):
+                 pitch_ratio=1.0, resolved=None, pinned=(), row_pitch=0.0,
+                 tiers=0):
     """Everything here is about the gap between the drawing's own units and
     the physical size you asked for. The SVG always *renders*; the question
     is whether anyone can read it once it is that many centimetres wide."""
@@ -1668,12 +2135,24 @@ def fit_warnings(constructs, settings, st, natW, natH, legend_px, leg_h,
                        f"{need_scale * natH / PT_PER_CM:.1f} cm "
                        f"(it, not the width, is what is limiting this)")
             else:
+                # round UP: rounding to nearest put the advised width
+                # below what is needed in about half of all cases, so
+                # following it exactly left the warning in place
                 dim = (f"widen figure_width_cm to "
-                       f"{need_scale * natW / PT_PER_CM:.1f} cm")
+                       f"{math.ceil(need_scale * natW / PT_PER_CM * 10) / 10:.1f} cm")
+            # Raising label_pt in `inside` mode widens the glyph it is
+            # written in, which widens the figure, which scales the text
+            # back down - the advice asymptotes below the floor and never
+            # comes true. Only offer it where it works.
+            # Raising label_pt grows the glyph in `inside` mode and the
+            # label tier in `outside`/`below`, and in both the figure grows
+            # with it, so the advice chases its own tail. It only works
+            # when the labels are not driving the width at all.
+            bigger = "" if mode != "none" else f"raise label_pt to {math.ceil(need_px):.0f}; "
             warn.append(
                 f"glyph labels render at {eff:.1f} pt, under your "
                 f"min_label_pt of {floor_pt:.0f}. Fixes, any one of: {dim}; "
-                f"raise label_pt to {need_px:.0f}; or shorten the names.")
+                f"{bigger}or shorten the names.")
 
     # 2a. the legend font hit its cap, i.e. min_font_pt is unreachable here
     if legend_px and legend_px >= BASE_FONT_PX * FONT_RUNAWAY - 0.5:
@@ -1723,68 +2202,9 @@ def fit_warnings(constructs, settings, st, natW, natH, legend_px, leg_h,
                 f"glyphs were stretched past it: {names}{more}. Lower "
                 f"label_pt, use labels = outside, or set a larger size.")
 
-    # 3b. a size set on a position marker, which cannot honour it
-    ignored = []
-    for c in constructs:
-        for p in c["parts"]:
-            # only worth saying when the requested size would have changed
-            # something; writing XS on a part that is XS anyway is harmless
-            if (p.get("size") and not is_scalable(p)
-                    and SIZE_W.get(p["size"]) != SIZE_W.get(default_size(p))):
-                ignored.append((p["label"] or p["type"], p["type"]))
-    if ignored:
-        seen, uniq = set(), []
-        for lab, t in ignored:
-            if t not in seen:
-                seen.add(t)
-                uniq.append(f"{lab} ({t})")
-        warn.append(
-            f"size is set on {len(ignored)} position marker(s) and was "
-            f"ignored: {', '.join(uniq[:4])}"
-            f"{f' and {len(uniq)-4} more' if len(uniq) > 4 else ''}. "
-            f"These mark a point in the sequence, so they draw at one fixed "
-            f"width; only length-bearing parts (cds, homology_arm, ltr, ...) "
-            f"respond to XS/S/M/L.")
+    warn += ignored_setting_warnings(constructs)
 
-    # 3c. colours that collapse for a colour-blind reader, or that are too
-    # close for anyone. Only the parts actually in this figure are compared,
-    # and only when colour is doing the work: if every glyph carries its own
-    # name and there is no legend to match against, two parts sharing a
-    # colour costs the reader nothing, and warning about it is noise.
-    colour_is_key = (mode == "none") or bool(legend_px)
-    used = {}
-    for c in constructs:
-        for p in c["parts"]:
-            if resolved is None:
-                break
-            used.setdefault(part_color(p, resolved), set()).add(
-                p.get("label") or p["type"])
-    cols = sorted(used)
-    same, cvd = [], []
-    for i in range(len(cols)):
-        for j in range(i + 1, len(cols)):
-            a, b = cols[i], cols[j]
-            na = ", ".join(sorted(used[a])[:2])
-            nb = ", ".join(sorted(used[b])[:2])
-            if colour_distance(a, b) < SAME_COLOUR:
-                same.append((na, nb))
-                continue
-            if min(colour_distance(a, b, k) for k in _CVD) < CVD_CLASH:
-                cvd.append((na, nb))
-    if same and colour_is_key:
-        pairs = "; ".join(f"{x} vs {y}" for x, y in same[:3])
-        warn.append(
-            f"{len(same)} pair(s) of parts are nearly the same colour: {pairs}"
-            f"{f' and {len(same)-3} more' if len(same) > 3 else ''}. Pin one of "
-            f"each pair in the colors sheet, or pick a palette with more range.")
-    if cvd and colour_is_key:
-        pairs = "; ".join(f"{x} vs {y}" for x, y in cvd[:3])
-        warn.append(
-            f"{len(cvd)} pair(s) of parts become indistinguishable to a "
-            f"red-green colour-blind reader: {pairs}"
-            f"{f' and {len(cvd)-3} more' if len(cvd) > 3 else ''}. Roughly 1 in "
-            f"12 men is affected. palette = okabe-ito, tol-muted or cividis "
-            f"avoids it, or name the glyphs with labels = outside.")
+    warn += colour_warnings(constructs, resolved, mode, legend_px, st)
 
     # 4. more distinct parts than the palette has colours
     keys = {(p["type"], p.get("label", "")) for c in constructs for p in c["parts"]}
@@ -1796,7 +2216,12 @@ def fit_warnings(constructs, settings, st, natW, natH, legend_px, leg_h,
     # extended with tints and shades first, and only genuinely runs out past
     # that point
     if resolved is not None:
-        auto = [v for k, v in resolved.items() if k in keys]
+        # Only the colours the tool chose. Two labels pinned to the same
+        # hex in the colors sheet is a decision, not a palette that ran
+        # out, and counting those told the user their 35-colour palette
+        # had been exhausted by two parts.
+        auto = [v for k, v in resolved.items()
+                if k in keys and k not in set(pinned)]
         dups = len(auto) - len(set(auto))
         bigger = (f"spectrum has {len(PALETTES['spectrum'])}, "
                   f"vivid {len(PALETTES['vivid'])}")
@@ -1817,14 +2242,19 @@ def fit_warnings(constructs, settings, st, natW, natH, legend_px, leg_h,
     # 5. a row so tall the labels dominate it. This compares the real row
     # pitch, not canvas height over row count - the latter counts the page
     # margins and cried wolf on single-cassette figures.
-    if mode in ("outside", "below"):
-        ratio = pitch_ratio
-        if ratio > 1.45:
-            warn.append(
-                f"outside labels are stacking into tiers - rows are {ratio:.1f}x "
-                f"the cassette_spacing you set. Lower label_pt, widen "
-                f"figure_width_cm so names have room side by side, or set "
-                f"label_repeat to once so repeats stop competing for space.")
+    # Gated on the real tier count. It used to trip on `pitch_ratio` alone,
+    # which has a floor of about 59 units whatever the labels do, so a
+    # single unstacked label with cassette_spacing below ~41 was reported as
+    # "stacking into tiers" - and none of the fixes offered could clear it,
+    # because the one setting that governs it was the one not mentioned.
+    if mode in ("outside", "below") and tiers >= 2 and pitch_ratio > 1.45:
+        warn.append(
+            f"{mode} labels are stacked {tiers} deep, making rows "
+            f"{pitch_ratio:.1f}x the cassette_spacing you set. Raise "
+            f"cassette_spacing to about {row_pitch:.0f} to give them the "
+            f"room they are taking anyway; or widen figure_width_cm so the "
+            f"names fit side by side, lower label_pt, or set label_repeat "
+            f"to once so repeats stop competing for space.")
     return warn
 
 
@@ -1888,10 +2318,29 @@ def _wb_header(ws, labels, widths, tips=None, row=1):
     ws.freeze_panes = f"A{row + 1}"
 
 
+def _wb_text(cell):
+    """Keep a value Excel would read as a formula as plain text.
+
+    openpyxl types any string starting = + - @ as a formula, and reading
+    the workbook back for its values then returns nothing for it. Writing
+    `=figure.svg` in outfile silently sent the figure somewhere else."""
+    if isinstance(cell.value, str) and cell.value[:1] in "=+-@":
+        cell.data_type = "s"
+    return cell
+
+
 def _wb_validate(ws, cell_range, options=None, source=None, title="", prompt=""):
     """A dropdown that also explains itself when the cell is selected."""
     from openpyxl.worksheet.datavalidation import DataValidation
     f = source if source else '"%s"' % ",".join(options)
+    # Excel caps an inline list at 255 characters and gives no warning past
+    # it - the file opens "damaged" and the validation is stripped. Anything
+    # longer has to live on the hidden `lists` sheet and be referenced.
+    if len(f) > 255:
+        raise RuntimeError(
+            f"inline dropdown for {cell_range} is {len(f)} characters, over "
+            f"Excel's 255 limit. Put the options on the `lists` sheet and "
+            f"pass source= instead.")
     dv = DataValidation(type="list", formula1=f, allow_blank=True,
                         showDropDown=False, showInputMessage=bool(prompt),
                         showErrorMessage=True)
@@ -1936,6 +2385,11 @@ def _wb_sheet_start(wb, path):
         ("greyed out, because drawing one wider would claim a longer feature.", "body"),
         ("", ""),
         ("Hover any column heading in the cassettes sheet for a note on it.", "body"),
+        ("", ""),
+        ("If something looks wrong", "h2"),
+        ("Run the command with --check: it prints what cistron thinks it is", "body"),
+        ("drawing and writes nothing. The rough edges that are already known", "body"),
+        ("are listed in KNOWN_ISSUES.md, next to the script.", "body"),
     ]
     r = 2
     for text, kind in lines:
@@ -1991,14 +2445,24 @@ def _wb_sheet_cassettes(wb, rows, box, edge):
     _wb_header(ws, head, [18, 7, 13, 26, 7, 7, 7, 10, 34], tips)
 
     demo = rows if rows is not None else [
-        ("Construct 1", 1, "HA", "5' homology", "M", "", "", "", ""),
-        (None, 2, "prom", "Promoter", "", "", "", "", ""),
+        # canonical names, not aliases: the dropdown and the
+        # unknown-type rule are both built from PART_TYPES, so a starter
+        # written with aliases opened with its own demo rows flagged red
+        ("Construct 1", 1, "homology_arm", "5' homology", "M", "", "", "", ""),
+        (None, 2, "promoter", "Promoter", "", "", "", "", ""),
         (None, 3, "cds", "Gene of interest", "L", "", "", "", ""),
-        (None, 4, "term", "", "", "", "", "", ""),
-        (None, 5, "HA", "3' homology", "M", "", "", "", ""),
+        (None, 4, "terminator", "", "", "", "", "", ""),
+        (None, 5, "homology_arm", "3' homology", "M", "", "", "", ""),
     ]
     for d in demo:
         ws.append(list(d) + [None] * (len(head) - len(d)))
+        # A label openpyxl types as a formula - anything starting = + - @ -
+        # comes back empty on the next read, because the sheet stores the
+        # formula and we read values. Force those cells to text, which also
+        # closes the spreadsheet-injection path on a shared workbook.
+        for c in ws[ws.max_row]:
+            if isinstance(c.value, str) and c.value[:1] in "=+-@":
+                c.data_type = "s"
 
     for row in ws.iter_rows(min_row=2, max_row=last, max_col=len(head)):
         for c in row:
@@ -2102,7 +2566,7 @@ def _wb_sheet_settings(wb, settings, box):
         for key, default, note in items:
             ws.cell(row=r, column=1, value=key).font = _wb_style(bold=True)
             val = given.get(key, default)
-            ws.cell(row=r, column=2, value=val)
+            _wb_text(ws.cell(row=r, column=2, value=val))
             ws.cell(row=r, column=3, value=note).font = _wb_style(
                 size=9, color=_WB_MUTED, italic=True)
             for col in (1, 2):
@@ -2110,9 +2574,16 @@ def _wb_sheet_settings(wb, settings, box):
             dv_cells[key] = f"B{r}"
             r += 1
         r += 1
-    for key, opts in [("theme", sorted(THEMES)), ("style", sorted(STYLES)),
-                      ("palette", sorted(PALETTES)),
-                      ("palette_mode", ["sheet", "theme"]),
+    # The three long lists live on the hidden `lists` sheet. Inline they
+    # came to 141, 104 and 68 characters against Excel's 255 cap, so adding
+    # a handful of themes would have broken the workbook silently.
+    for key, col, n in (("theme", "B", len(THEMES)),
+                        ("style", "C", len(STYLES)),
+                        ("palette", "D", len(PALETTES))):
+        if key in dv_cells:
+            _wb_validate(ws, dv_cells[key],
+                         source=f"=lists!${col}$2:${col}${n + 1}")
+    for key, opts in [("palette_mode", ["auto", "sheet", "theme"]),
                       ("labels", ["none", "inside", "outside", "below"]),
                       ("label_repeat", ["all", "once", "row"]),
                       ("row_titles", ["none", "left", "above"]),
@@ -2179,7 +2650,7 @@ def _wb_sheet_colors(wb, colors, box):
     rowsc = colors if colors is not None else []
     for i, rc in enumerate(rowsc):
         for j, v in enumerate(list(rc) + [None] * (3 - len(rc)), start=1):
-            ws.cell(row=head_row + 1 + i, column=j, value=v)
+            _wb_text(ws.cell(row=head_row + 1 + i, column=j, value=v))
     for row in ws.iter_rows(min_row=head_row + 1,
                             max_row=head_row + max(len(rowsc), 12), max_col=3):
         for c in row[:2]:
@@ -2189,7 +2660,10 @@ def _wb_sheet_colors(wb, colors, box):
         v = row[1].value
         if isinstance(v, str) and HEX_RE.match(v.strip()):
             row[1].font = Font(name="Consolas", size=10)
-            row[1].fill = PatternFill("solid", fgColor=v.strip().lstrip("#").upper())
+            h = v.strip().lstrip("#").upper()
+            if len(h) == 3:          # #28B is valid input; aRGB is not
+                h = "".join(c * 2 for c in h)
+            row[1].fill = PatternFill("solid", fgColor=h)
     if not rowsc:
         c = ws.cell(row=head_row + 1, column=1,
                     value="(empty - every colour is automatic)")
@@ -2378,8 +2852,23 @@ def watch(wb_path, argv):
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("-")]
     flags = {a.lower() for a in argv[1:] if a.startswith("-")}
+    # A mistyped flag used to be ignored, so `--chek` ran a normal draw and
+    # overwrote the figure that --check exists to protect.
+    known = {"--new", "--list", "-l", "--themes", "--check", "--watch",
+             "--version", "-v", "--help", "-h"}
+    unknown = sorted(flags - known)
+    if unknown:
+        raise SystemExit(
+            f"Unknown option{'s' if len(unknown) > 1 else ''}: "
+            f"{', '.join(unknown)}\nRun with --help to see what there is.")
 
-    if "--version" in flags or "-V" in flags:
+    if len(args) > 1 and "--new" not in flags:
+        raise SystemExit(
+            f"One workbook at a time, and {len(args)} were given "
+            f"({', '.join(os.path.basename(a) for a in args[:3])}). "
+            f"Run cistron once for each.")
+
+    if "--version" in flags or "-v" in flags:
         print(f"cistron {__version__}")
         return
 
@@ -2391,33 +2880,69 @@ def main(argv):
         print("  --check     report what it would draw, writing nothing")
         print("  --watch     redraw automatically whenever the workbook is saved")
         print("  --version   print the version and stop")
+        print("\nKnown issues are listed in KNOWN_ISSUES.md, beside this "
+              "file.")
         return
 
     if "--list" in flags or "-l" in flags:
         print_catalogue()
         return
 
+    if "--new" in flags and "--check" in flags:
+        raise SystemExit(
+            "--new writes a workbook, so it cannot be combined with "
+            "--check, which writes nothing. Drop one of them.")
+
     if "--new" in flags:
-        target = args[0] if args else "constructs.xlsx"
+        target = args[0] if args else DEFAULT_WORKBOOK
+        if not os.path.isabs(target):
+            target = os.path.join(os.getcwd(), target)
+        stem = os.path.splitext(os.path.basename(target))[0]
+        if os.path.exists(target):
+            raise SystemExit(
+                f"{os.path.basename(target)} already exists, and --new would "
+                f"replace it with an empty starter.\nMove it first, or pick "
+                f"another name:\n    python3 {os.path.basename(__file__)} "
+                f"--new {stem}-2.xlsx")
+        parent = os.path.dirname(target)
+        if parent and not os.path.isdir(parent):
+            raise SystemExit(f"No such folder: {parent}")
         write_starter(target)
         print(f"wrote {target}\n\nOpen it, start on the 'Start here' sheet, "
               f"then run:\n    python3 {os.path.basename(__file__)} {target}")
         return
 
     wb_arg = args[0] if args else DEFAULT_WORKBOOK
-    wb_path = wb_arg if os.path.isabs(wb_arg) else os.path.join(SCRIPT_DIR, wb_arg)
+    # Where the user is standing comes first - `--new mine.xlsx` writes there,
+    # so `cistron.py mine.xlsx` has to look there. The folder holding the
+    # script is the fallback, which is what makes the zero-argument run work
+    # from anywhere.
+    if os.path.isabs(wb_arg):
+        wb_path = wb_arg
+    else:
+        here = os.path.join(os.getcwd(), wb_arg)
+        wb_path = here if os.path.exists(here) else os.path.join(SCRIPT_DIR, wb_arg)
     if not os.path.exists(wb_path):
         me = os.path.basename(__file__)
         # point at a workbook that is actually here before suggesting anything
-        near = sorted(f for f in os.listdir(SCRIPT_DIR)
-                      if f.lower().endswith((".xlsx", ".xlsm"))
-                      and not f.startswith("~$"))
+        def _books(d):
+            try:
+                return sorted(f for f in os.listdir(d)
+                              if f.lower().endswith((".xlsx", ".xlsm"))
+                              and not f.startswith("~$"))
+            except OSError:
+                return []
+
+        cwd = os.getcwd()
+        here, beside = _books(cwd), _books(SCRIPT_DIR)
         msg = [f"No workbook found at: {wb_path}", ""]
+        near = here or beside
         if near:
-            msg += ["There is a workbook next to the script. Try:",
+            where = ("in this folder" if here else "next to the script")
+            msg += [f"There is a workbook {where}. Try:",
                     f"    python3 {me} {near[0]}"]
             if len(near) > 1:
-                msg += ["", "Others here: " + ", ".join(near[1:6])]
+                msg += ["", "Others: " + ", ".join(near[1:6])]
         else:
             msg += ["Make one to start from:",
                     f"    python3 {me} --new constructs.xlsx",
@@ -2428,6 +2953,11 @@ def main(argv):
 
     settings, colors, constructs = load_workbook_config(wb_path)
 
+    if "--themes" in flags and "--check" in flags:
+        raise SystemExit(
+            "--themes writes one sample per theme, so it cannot be combined "
+            "with --check, which writes nothing. Drop one of them.")
+
     if "--themes" in flags:
         build_theme_sheet(constructs, settings, colors)
         return
@@ -2435,6 +2965,14 @@ def main(argv):
     st, palette, style_name, palette_name = resolve_theme(settings)
     mode = str(settings["palette_mode"]).lower()
     resolved = assign_palette(constructs, colors, palette, mode)
+    # which (type, label) keys the user fixed by hand, so the sanity check
+    # does not read a deliberate pin as the palette having run out
+    pinned_keys = set()
+    if mode != "theme":
+        for c in constructs:
+            for p in c["parts"]:
+                if colors.get(p.get("label") or "") or colors.get(p["type"]):
+                    pinned_keys.add((p["type"], p.get("label", "")))
 
     import hashlib
     import time
@@ -2451,8 +2989,8 @@ def main(argv):
           f"[{', '.join(c['name'] for c in constructs)}]")
 
     checking = "--check" in flags
-    path, w, h, fpx, lh, pr = build_figure(constructs, settings, resolved, st,
-                                           write=not checking)
+    path, w, h, fpx, lh, pr, pitch, tiers = build_figure(
+        constructs, settings, resolved, st, write=not checking)
     wcm = settings["figure_width_cm"]
     lab = str(settings.get("labels") or "none").lower()
     extra = f", labels={lab}"
@@ -2467,18 +3005,45 @@ def main(argv):
         print(f"wrote      {path}  (viewBox {w:.0f}x{h:.0f}{extra})")
 
     for i, msg in enumerate(fit_warnings(constructs, settings, st, w, h, fpx,
-                                         lh, pr, resolved), 1):
+                                         lh, pr, resolved,
+                                         pinned=pinned_keys,
+                                         row_pitch=pitch, tiers=tiers), 1):
         print(f"\nWARNING {i}  {msg}")
 
     if "--check" not in flags:
         base = settings.get("_basedir") or SCRIPT_DIR
         target = settings["outfile"]
         target = target if os.path.isabs(target) else os.path.join(base, target)
-        if os.path.splitext(target)[1].lower() != ".svg":
-            svg_tmp = os.path.splitext(target)[0] + ".svg"
+        ext = os.path.splitext(target)[1].lower()
+        if ext != ".svg":
+            if ext not in (".png", ".pdf"):
+                raise SystemExit(
+                    f"outfile is {os.path.basename(target)}, and cistron "
+                    f"writes .svg, .png or .pdf. The drawing is at "
+                    f"{os.path.basename(path)}.")
+            import tempfile
+            fd, svg_tmp = tempfile.mkstemp(
+                suffix=".svg", dir=os.path.dirname(target) or ".")
+            os.close(fd)
             os.replace(path, svg_tmp)
-            convert(svg_tmp, target)
-            print(f"converted  {target}")
+            try:
+                convert(svg_tmp, target)
+            except BaseException:
+                # the drawing is the only copy; keep it rather than deleting
+                # it and pointing the user at a path that no longer exists
+                keep = os.path.splitext(target)[0] + ".svg"
+                if os.path.exists(keep):
+                    keep = svg_tmp
+                else:
+                    os.replace(svg_tmp, keep)
+                print(f"the drawing itself is at {keep}")
+                raise
+            else:
+                print(f"converted  {target}")
+                try:
+                    os.remove(svg_tmp)
+                except OSError:
+                    pass
 
     if settings["export_each"] and "--check" not in flags:
         export_each(constructs, settings, resolved, st)
@@ -2488,7 +3053,14 @@ if __name__ == "__main__":
     if "--watch" in {a.lower() for a in sys.argv[1:]}:
         _args = [a for a in sys.argv[1:] if not a.startswith("-")]
         _wb = _args[0] if _args else DEFAULT_WORKBOOK
-        _wb = _wb if os.path.isabs(_wb) else os.path.join(SCRIPT_DIR, _wb)
+        # main() looks in the current folder first; this used to look only
+        # beside the script, so `--watch mine.xlsx` from your own folder sat
+        # watching a file that was not there, forever, in silence.
+        if not os.path.isabs(_wb):
+            _here = os.path.join(os.getcwd(), _wb)
+            _wb = _here if os.path.exists(_here) else os.path.join(SCRIPT_DIR, _wb)
+        if not os.path.exists(_wb):
+            raise SystemExit(f"No workbook found at: {_wb}")
         try:
             watch(_wb, sys.argv)
         except KeyboardInterrupt:

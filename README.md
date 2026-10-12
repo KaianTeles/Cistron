@@ -15,6 +15,9 @@ python3 cistron.py
 No arguments needed. `constructs.xlsx` ships filled in with three example
 constructs and is the file you edit.
 
+> **[Known issues](KNOWN_ISSUES.md)** — six of them, all measured, none
+> reached by the default settings. Worth a minute before you file a bug.
+
 ---
 
 ## Install
@@ -55,6 +58,7 @@ python3 cistron.py --new my.xlsx       # start a second, separate workbook
 python3 cistron.py --list              # every theme, palette and part type
 python3 cistron.py --themes            # one sample figure per theme, from your own data
 python3 cistron.py --check             # say what it would draw, write nothing
+python3 cistron.py --version           # print the version and stop
 python3 cistron.py --help              # all of the above
 ```
 
@@ -109,11 +113,33 @@ and every column heading carries a note on hover.
   blank to continue the one above, so you name each group once.
 - **order** — position within the construct. Blank falls back to sheet order.
 - **size** — `XS` `S` `M` `L`, on parts where width means something.
-- **dir** — `fwd` or `rev`.
-- **join** — `yes` sits flush against the previous part: a fusion.
+- **dir** — `rev` turns the part around. Blank means forward.
+- **join** — `yes` draws the part flush against the one before it, with no
+  backbone between them: a fusion.
 - **color** — optional hex for this row only; beats everything else.
 
 A row with an empty `type` is skipped, so blank spacers are fine.
+
+### join, dir and alignment
+
+![layout](examples/gallery_layout.png)
+
+**`join`** is the difference between parts that sit next to each other on the
+construct and parts that are one translated protein. Leave it blank and each
+part gets its own stretch of backbone; write `yes` and it is drawn touching
+the previous part. Chain it down several rows to fuse three or more parts —
+a signal peptide, a gene and a tag become one object.
+
+**`dir`** only has an effect on parts drawn with a shape that has a point to
+turn around: `cds`, `ctp`, `itr`, `loxp`, `ltr`, `marker`, `nls`, `overhang`, `primer`, `promoter`, `reporter`, `tdna_border`, `transposon_end`. Everything else is symmetrical — a terminator or an
+origin looks the same either way — so `rev` on one of those changes nothing
+and the sanity check says so rather than leaving you to wonder.
+
+**`anchor_side`**, in the `settings` sheet, lines up constructs of different
+lengths. `right` is the default and aligns their right-hand ends, which is
+what you want when the rows share a 3' end and differ upstream. `left` aligns
+their starts instead. With rows of equal length the setting makes no
+difference.
 
 ---
 
@@ -159,9 +185,25 @@ A theme is a **style** (geometry and ink) plus a **palette** (colour). Set
 | `gradient` | perceptually ordered, when pathway position is the message |
 | `classic` | the original look |
 
-Palettes include Okabe–Ito, Paul Tol bright and muted, viridis and cividis, so
-a colour-blind-safe figure is one cell away. `--themes` writes one sample SVG
-per theme from your own data.
+### Every style and palette
+
+A **style** is the geometry and ink; a **palette** is the colours. Either can
+be set on its own, and any pairing works.
+
+| | |
+|---|---|
+| **styles** | `classic` `journal` `bold` `flat` `minimal` `outline` `soft` `tint` `dark` `blueprint` |
+| **palettes** | `spectrum` `nature` `vivid` `deep` `earth` `pastel` `ocean` `okabe-ito` `tol-bright` `tol-muted` `viridis` `cividis` `grayscale` |
+
+`okabe-ito`, `tol-bright` and `tol-muted` are built so that no two of their
+colours collapse together for a red-green colour-blind reader — a
+colour-blind-safe figure is one cell away. `viridis`, `cividis`, `ocean` and
+`grayscale` are ordered ramps: use them when position in a pathway is the
+message, not when parts must be told apart. `grayscale` is for a journal that
+charges for colour.
+
+`python3 cistron.py --themes` writes one sample SVG per theme from your own
+data, and `--list` prints the whole catalogue.
 
 ---
 
@@ -176,7 +218,18 @@ so it drops into a column or a slide at the size you meant.
 | `figure_height_cm` | leave blank and the height follows from the drawing; set it and the figure is scaled down to fit inside the box, with blank side margins if it has to be |
 | `cassette_spacing` | vertical room per construct, so rows can breathe or pack tight |
 | `label_pt` | label size, before any scaling |
-| `export_each` / `export_width_cm` | also write one file per construct, at their own width |
+| `anchor_side` | `right` or `left` — which end rows of different lengths line up on |
+| `export_each` / `export_width_cm` / `export_prefix` | also write one file per construct, at their own width, named `<prefix>-<cassette>.svg` |
+
+And the fine adjustments, which most figures never need:
+
+| setting | |
+|---|---|
+| `line_thickness` | multiplies every glyph outline (1 = the style's own weight) |
+| `backbone_thickness` | multiplies the line the parts sit on |
+| `min_label_pt` | the smallest glyph label you will accept; below it you get a warning, never a silent shrink |
+| `min_font_pt` | the same floor for the legend, which is sized to meet it |
+| `outfile` | the file to write, beside the workbook. `.svg`, or `.png` / `.pdf` if `cairosvg` is installed — nothing else is accepted, so a figure can never land on top of a workbook or a document |
 
 Set the width; the rest have working defaults. The output is vector, so these
 values cost no resolution. They matter because they fix how large the text
@@ -215,6 +268,15 @@ palette slot is not the same thing as a colour that looks different.
 If a figure has more parts than the palette has hues, the palette is extended
 with tints and shades of its own colours rather than repeating one, so two
 genes never come out identical.
+
+Where two parts would come out looking the same — in normal vision or for a
+red-green colour-blind reader — one of them is moved to a colour with more
+room around it. That is a property of the whole figure, so adding a part can
+change a colour elsewhere: measured across palettes, a median of 3 to 35 per
+cent of the colours move, and none at all when nothing was too close. Two
+parts you cannot tell apart is a broken figure; a part that changed shade
+between drafts is a nuisance. **Pin anything that must never move** — a pin is
+never touched, and no automatic colour is allowed near one.
 
 Precedence, highest first:
 
@@ -309,6 +371,9 @@ accident.
 ---
 
 ## Notes and limits
+
+The measured rough edges are listed separately, in
+**[KNOWN_ISSUES.md](KNOWN_ISSUES.md)**.
 
 - Text width is estimated from per-character advance widths for a
   Helvetica-like stack. Accurate to a few percent, but a very different

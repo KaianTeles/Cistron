@@ -6,7 +6,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = ["test_suite.py", "test_workbook_and_cli.py",
-          "test_repo_hygiene.py"]
+          "test_review_fixes.py", "test_repo_hygiene.py"]
 
 failed = 0
 for s in SUITES:
