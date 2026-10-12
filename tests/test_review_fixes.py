@@ -544,6 +544,17 @@ if _blocks:
 check("pip install -r requirements.txt" in _rdme,
       "it points at requirements.txt, so the dependency list has one home")
 
+print("== the picture at the top of the README is what you get ==")
+_s0, _c0, _cons0 = M.load_workbook_config(os.path.join(ROOT, M.DEFAULT_WORKBOOK))
+_s0["_basedir"], _s0["outfile"] = TMP, "zero.svg"
+_st0, _pal0, _, _ = M.resolve_theme(_s0)
+_r0 = M.assign_palette(_cons0, _c0, _pal0, str(_s0["palette_mode"]).lower())
+_f0 = M.build_figure(_cons0, _s0, _r0, _st0)
+_shipped = open(os.path.join(ROOT, "examples", "example_figure.svg"),
+                encoding="utf-8").read()
+check(open(_f0.path, encoding="utf-8").read() == _shipped,
+      "the README image is the shipped workbook, drawn as shipped")
+
 # ------------------------------------------------- the gallery is legible
 print("== the gallery panels are built to be comparable ==")
 _gal = open(os.path.join(ROOT, "examples", "make_gallery.py"),

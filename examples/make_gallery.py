@@ -340,12 +340,21 @@ grid([("the cassettes sheet", table_image(WALK_HEAD, WALK_ROWS)),
      1, "gallery_walkthrough.png",
      "eight rows in, one figure out", cell_w=1240)
 
-# the headline image: one construct set, the default look
-im = draw(PANEL, "hero")        # the default look, no overrides
-im.save(os.path.join(OUT, "example_figure.png"))
-import shutil
-shutil.copy(os.path.join(TMP, "hero.svg"), os.path.join(OUT, "example_figure.svg"))
-print("wrote example_figure.png / .svg")
+# The headline image is the shipped workbook, drawn with its own settings:
+# it is exactly what `python3 cistron.py` gives you the first time, so the
+# picture at the top of the README cannot drift from what you actually get.
+import shutil                                                    # noqa: E402
+
+_s, _c, _cons = C.load_workbook_config(os.path.join(ROOT, C.DEFAULT_WORKBOOK))
+_s["_basedir"], _s["outfile"] = TMP, "hero.svg"
+_st, _pal, _, _ = C.resolve_theme(_s)
+_res = C.assign_palette(_cons, _c, _pal, str(_s["palette_mode"]).lower())
+_fig = C.build_figure(_cons, _s, _res, _st)
+Image.open(io.BytesIO(cairosvg.svg2png(
+    url=_fig.path, output_width=max(1, round(_fig.width * SCALE))))
+).save(os.path.join(OUT, "example_figure.png"))
+shutil.copy(_fig.path, os.path.join(OUT, "example_figure.svg"))
+print("wrote example_figure.png / .svg  (the shipped workbook, as shipped)")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\ngallery rebuilt")
